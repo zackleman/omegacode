@@ -17,7 +17,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "pnpm -C viewer build && tsup",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
     "test": "node --test --import tsx ./test/*.test.ts",

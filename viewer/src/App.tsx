@@ -1,52 +1,34 @@
-import { useEffect, useState } from "react"
+import { Route, Routes } from "react-router-dom"
 
-import { Button } from "@/components/ui/button"
+import { RunList } from "@/components/RunList"
+import { RunView } from "@/components/RunView"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 
-interface RunSummary {
-  runId: string
-  name?: string
-  status: string
-  agents: number
+function Empty() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+      <span className="text-2xl text-[var(--codex)]">✦</span>
+      <span className="text-sm">Select a run to view its phase tree.</span>
+    </div>
+  )
 }
 
 export function App() {
-  const [runs, setRuns] = useState<RunSummary[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  const load = () => {
-    setError(null)
-    fetch("/api/runs")
-      .then((r) => r.json())
-      .then((data: RunSummary[]) => setRuns(data))
-      .catch((e: unknown) => setError(String(e)))
-  }
-  useEffect(load, [])
-
   return (
-    <div className="min-h-svh p-6 font-mono text-sm">
-      <h1 className="mb-1 text-base font-medium">
-        agent-workflows viewer <span className="text-muted-foreground">— shadcn scaffold (M0)</span>
-      </h1>
-      <p className="mb-4 text-xs text-muted-foreground">
-        Proves the Vite + shadcn pipeline and the `/api` dev proxy. The bb-styled timeline lands in M1+.
-      </p>
-      {error && (
-        <p className="text-destructive">
-          API error: {error} — is <code>agent-workflows serve</code> running on :4123?
-        </p>
-      )}
-      <ul className="space-y-1">
-        {runs.map((r) => (
-          <li key={r.runId} className="flex items-center gap-2">
-            <span className="w-20 text-muted-foreground">{r.status}</span>
-            <span className="font-medium">{r.name ?? r.runId}</span>
-            <span className="text-muted-foreground">· {r.agents} agents</span>
-          </li>
-        ))}
-      </ul>
-      <Button className="mt-4" onClick={load}>
-        Refresh ({runs.length})
-      </Button>
+    <div className="h-screen w-screen overflow-hidden">
+      <ResizablePanelGroup orientation="horizontal">
+        <ResizablePanel defaultSize="20%" minSize="15%" maxSize="34%">
+          <RunList />
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel defaultSize="80%">
+          <Routes>
+            <Route path="/" element={<Empty />} />
+            <Route path="/run/:id" element={<RunView />} />
+            <Route path="/run/:id/agent/:index" element={<RunView />} />
+          </Routes>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   )
 }

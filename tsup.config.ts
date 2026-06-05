@@ -11,6 +11,6 @@ export default defineConfig({
   dts: false,
   splitting: false,
   // serve.ts resolves its web assets at join(__dirname, "web"); __dirname is dist/ once bundled,
-  // so copy the static UI into dist/web after each build.
-  onSuccess: "rm -rf dist/web && cp -r src/server/web dist/web",
+  // so copy the built React viewer (viewer/dist) into dist/web after each build.
+  onSuccess: "rm -rf dist/web && cp -r viewer/dist dist/web",
 })

@@ -2,7 +2,7 @@
 // state from the runs directory (events.jsonl / result.json) into JSON + an SSE stream,
 // and serves a tiny no-build SPA. node:http only; no extra deps.
 
-import { createReadStream } from "node:fs"
+import { createReadStream, existsSync } from "node:fs"
 import { open, readFile, readdir, stat, watch } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { basename, dirname, extname, join, normalize, sep } from "node:path"
@@ -15,7 +15,10 @@ import type { ChatChunk } from "../runtime/transcript.js"
 import type { ProviderId } from "../dsl/types.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const WEB_DIR = join(__dirname, "web")
+// Built viewer assets: dist/web when bundled (tsup copies viewer/dist there), or the live
+// viewer/dist when running from source (tsx src/server/serve.ts → repo/viewer/dist).
+const WEB_CANDIDATES = [join(__dirname, "web"), join(__dirname, "..", "..", "viewer", "dist")]
+const WEB_DIR = WEB_CANDIDATES.find((p) => existsSync(p)) ?? WEB_CANDIDATES[0]!
 
 function runsDir(): string {
   return join(dataRoot(), "runs")
@@ -245,6 +248,10 @@ const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
 }
 
 /** Serve a file from WEB_DIR, guarding against path traversal. */
@@ -474,20 +481,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return
   }
 
-  // Static assets + root.
-  if (path === "/" || path === "/index.html") {
-    serveStatic(res, "index.html")
-    return
-  }
-  if (path === "/app.js") {
-    serveStatic(res, "app.js")
-    return
-  }
-  if (path === "/style.css") {
-    serveStatic(res, "style.css")
-    return
-  }
-
   // API: list runs.
   if (path === "/api/runs") {
     sendJson(res, 200, await listRuns())
@@ -557,7 +550,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return
   }
 
-  sendText(res, 404, "not found")
+  // Unmatched API path → 404 JSON; everything else → static SPA assets (HashRouter, so no
+  // server-side route fallback is needed beyond serving index.html at "/").
+  if (path.startsWith("/api/")) {
+    sendJson(res, 404, { error: "not found" })
+    return
+  }
+  serveStatic(res, path === "/" ? "index.html" : path)
 }
 
 // ---------------------------------------------------------------------------
