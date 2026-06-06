@@ -18,6 +18,12 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (rel: string) => readFileSync(join(root, rel), "utf8")
 const pkg = JSON.parse(read("package.json")) as Record<string, any>
 
+/** Run `npm <args>` portably: on Windows npm is npm.cmd, which only spawns through a shell. */
+function npm(args: string[], cwd: string): string {
+  const win = process.platform === "win32"
+  return execFileSync(win ? "npm.cmd" : "npm", args, { cwd, encoding: "utf8", shell: win })
+}
+
 describe("exports / types map (M31)", () => {
   test("declares a top-level types entry", () => {
     assert.equal(pkg.types, "./dist/index.d.ts")
@@ -337,10 +343,7 @@ describe("npm pack tarball contract (M31)", () => {
     writeFileSync(join(stage, "src", "dsl", "ambient.d.ts"), "export {}\n")
     writeFileSync(join(stage, "secret.env"), "TOKEN=xxx\n")
 
-    const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
-      cwd: stage,
-      encoding: "utf8",
-    })
+    const out = npm(["pack", "--dry-run", "--json"], stage)
     entries = JSON.parse(out)[0].files as Array<{ path: string }>
   })
   after(() => {
@@ -379,7 +382,7 @@ describe("real npm pack tarball (M31, post-build)", () => {
   const built = existsSync(join(root, "dist", "index.d.ts"))
 
   test("built dist packs the dts, ambient, web assets, LICENSE — and nothing unexpected", { skip: !built }, () => {
-    const out = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf8" })
+    const out = npm(["pack", "--dry-run", "--json"], root)
     const entries = JSON.parse(out)[0].files as Array<{ path: string }>
     const paths = entries.map((e) => e.path)
     for (const required of [

@@ -1,5 +1,7 @@
 # omegacode
 
+[![CI](https://github.com/SawyerHood/omegacode/actions/workflows/ci.yml/badge.svg)](https://github.com/SawyerHood/omegacode/actions/workflows/ci.yml)
+
 Run JavaScript **workflow files** that orchestrate **Codex** and **Claude Code** agents with a small
 DSL — `agent()` / `parallel()` / `pipeline()` / `phase()` / `log()`. The capability target is Claude
 Code's Workflows; the workers are pluggable (Codex via the `codex app-server`, Claude Code via the

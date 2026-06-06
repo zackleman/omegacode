@@ -218,7 +218,8 @@ describe("registry CLI (workflows / save / run-by-name)", () => {
     const src = writeWorkflow(project, "proj-saved", "src.js")
     const r = await runCli(["save", src, "--project"], env(), project)
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
-    assert.match(r.stdout, new RegExp(`\\.omegacode/workflows/proj-saved\\.workflow\\.js`))
+    // join() so the assertion holds on Windows path separators too.
+    assert.ok(r.stdout.includes(join(".omegacode", "workflows", "proj-saved.workflow.js")), r.stdout)
   })
 
   test("re-save refuses without --force, succeeds with it", async () => {

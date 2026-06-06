@@ -1,0 +1,50 @@
+# CI matrix: typecheck + full build (viewer + tsup + postbuild) + the test suite across
+# OS × Node lines. Tests run AFTER the build so the post-build packaging suite (which skips
+# itself when dist/ is absent) actually executes.
+#
+# Windows lanes are observational (continue-on-error) until the suite is proven there — the
+# code has Windows paths but has never run on one. Windows × Node 20 is excluded outright:
+# the npm test script passes a glob that cmd.exe doesn't expand, and Node only resolves
+# --test globs itself from 21 on.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["20", "22", "24"]
+        experimental: [false]
+        include:
+          - os: windows-latest
+            node: "22"
+            experimental: true
+          - os: windows-latest
+            node: "24"
+            experimental: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # Full build: viewer (pnpm via the npx fallback in build-viewer.mjs), tsup, postbuild.
+      - run: npm run build
+      - run: npm test
