@@ -52,6 +52,15 @@ Script body hooks:
 
 Agents are told their final text IS the return value (not a human-facing message), so they return raw data. For structured output, use the schema option — validation happens at the worker layer and the agent retries once on a mismatch.
 
+## Providers — codex vs claude-code
+
+Every agent() runs under a provider. `provider: "codex"` is the default; `--provider` sets the default for a run; per-agent `opts.provider` overrides it; **mix providers freely within one workflow.** Both are real coding agents with their own tools (read files, run commands, search) — they differ mainly in tuning and setup:
+
+- **codex** (OpenAI, gpt-5.x) — the default. Tune reasoning depth with `opts.effort` (`"low" | "medium" | "high"`). A strong default for the **fan-out / gather** end of a workflow: codebase reading, search, command-running, large-context exploration. Requires the `codex` CLI authenticated (ChatGPT login) — its built-in tools (incl. hosted image generation) come from that auth, and it ignores `OPENAI_API_KEY`. Structured output uses codex's native constrained decoding (a free-form working turn, then a schema-constrained extraction turn).
+- **claude-code** (Anthropic, Claude) — via the Claude Agent SDK. A strong choice for the **reduce / verify / synthesize** end: synthesis, judgment, careful writing, and adversarial verification (the skeptic in a verify pass). Requires the `claude` CLI / SDK available. Structured output is delivered on the final result only (intermediate messages stay free-form).
+
+The common shape is to use Codex agents to fan out and gather, then a Claude agent to synthesize or judge — but either provider works anywhere. Run `agent-workflows doctor` to confirm both are installed/authed. Both honor `sandbox` (read-only by default) and `cwd`, and `worktree: true` isolates parallel file edits regardless of provider.
+
 Scripts are plain JavaScript, NOT TypeScript — type annotations (`: string[]`), interfaces, and generics fail to parse. The script body runs in an async context — use await directly. Standard JS built-ins (JSON, Math, Array, etc.) are available — EXCEPT `Date.now()`/`Math.random()`/argless `new Date()`, which throw (they would break resume) and are rejected by a submit-time lint; use the injected `now()`/`random()` instead, or pass timestamps in via `args`. No filesystem, network, or relative import/require in the workflow body (the agents do the I/O).
 
 DEFAULT TO pipeline(). Only reach for a barrier (parallel between stages) when you genuinely need ALL prior-stage results together.
