@@ -63,14 +63,20 @@ top-level `return`. No imports — the globals are in scope. Use `now()`/`random
 ## CLI
 
 ```
-omegacode run <file.workflow.js> [options]   # run a workflow (auto-starts the viewer, prints its URL)
+omegacode run <file.workflow.js | name> [options]   # run a workflow (auto-starts the viewer, prints its URL)
 omegacode serve [--port 4123]                # localhost read-only viewer over all runs
 omegacode runs [--prune --keep N] [--prune-stale]   # list / prune runs
-omegacode validate <file>                    # parse + check meta without running
+omegacode workflows [--json]                 # list saved/named workflows (project, user, builtin)
+omegacode save <file> [--project] [--force]  # save a workflow by its meta.name
+omegacode validate <file | name>             # parse + check meta without running
 omegacode doctor                             # check codex/claude availability + data dir
 omegacode guide                              # print the authoring guide (the skill text)
 omegacode install-skill [--claude] [--agents]   # install the authoring skill into agent skill dirs
 ```
+
+`run`/`validate` accept a saved workflow's name (its `meta.name`) instead of a path, resolved from
+`.omegacode/workflows/` in the project, `~/.omegacode/workflows/`, or the shipped built-ins —
+`deep-research` and `code-review`. Try: `omegacode run deep-research --args '"your question"'`.
 
 See `omegacode --help` for the full flag list and `omegacode guide` (i.e. `skill/SKILL.md`) for the
 authoring guide.

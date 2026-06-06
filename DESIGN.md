@@ -598,14 +598,16 @@ estimate — were **not shipped**. `validate` only parses the file and prints it
 `doctor` is a binary-presence check (no `--provider` flag).
 
 ```
-omegacode run <file.workflow.js> [--args <json> | --args-file f.json]
+omegacode run <file.workflow.js | name> [--args <json> | --args-file f.json]
                                  [--provider codex|claude-code] [--model m] [--effort e]
                                  [--sandbox read-only|workspace-write|danger-full-access] [--cwd <dir>]
                                  [--concurrency N] [--budget N] [--resume <runId>]
                                  [--fake] [--json] [--open] [--no-serve] [--port N]
 omegacode serve [--port 4123] [--host h] [--idle-shutdown]   # read-only viewer over all runs
 omegacode runs [--prune --keep N] [--prune-stale]            # list runs (or prune old / dead ones)
-omegacode validate <file.workflow.js>   # parse the file + print its meta (no plan / no run)
+omegacode workflows [--json]            # list saved/named workflows (project, user, builtin tiers)
+omegacode save <file> [--project] [--force]   # save a workflow into the user (or project) registry
+omegacode validate <file.workflow.js | name>  # parse the file + print its meta (no plan / no run)
 omegacode doctor                        # check codex/claude binary presence + print the data dir
 omegacode guide                         # print the authoring guide (the body of skill/SKILL.md)
 omegacode install-skill [--claude] [--agents]   # install skill/SKILL.md into agent skill dirs
@@ -617,6 +619,17 @@ the browser, `--no-serve` opts out, and `--json` keeps stdout pure JSON (the URL
 On completion *or* failure, `run` prints the `runId` and the exact `--resume` command. `--fake` swaps in
 the in-process fake worker (no real provider calls) for offline smoke tests. `guide` and `install-skill`
 both read the single source of truth `skill/SKILL.md`.
+
+**Named workflows** (`runtime/registry.ts`): `run`/`validate` accept a bare name — anything without a
+path separator or `.js` suffix — resolved by **`meta.name`** (not filename) across three tiers, highest
+first: *project* (every `.omegacode/workflows/` from cwd up to the repo/home boundary; nearer shadows
+farther), *user* (`<dataRoot>/workflows/`), *builtin* (the package `builtins/` dir, shipped in the npm
+tarball). Only `.js` files ≤ 512 KiB with a valid `meta` load; invalid/oversize files are skipped.
+`save` validates via `parseWorkflow` and copies to `<tier>/<meta.name>.workflow.js` (no overwrite
+without `--force`). Two built-ins ship, ports of Claude Code's bundled workflows: `deep-research`
+(scope → 5 parallel web searches → fetch/dedup top 15 → 3-vote adversarial verify, 2/3 refutes kill →
+cited report) and `code-review` (per-angle finders → independent CONFIRMED/PLAUSIBLE/REFUTED verifier
+per finding → gap-sweep at xhigh/max → ranked, capped report; `LEVEL_PARAMS` scale by level).
 
 ---
 
@@ -647,6 +660,7 @@ omegacode/
       primitives.ts       # Runtime: agent/parallel/pipeline/phase/log/now/random/budget over runAgent
       semaphore.ts        # concurrency semaphore (gates runAgent; mutex(1) for worktree creation)
       journal.ts          # journal read/write (jsonl), resume lookup, seed persistence, data dir
+      registry.ts         # named-workflow registry (project/user/builtin tiers, meta.name lookup)
       keys.ts             # chained call-key hashing (incl. provider) + determinism lint
       events.ts           # event types (run/phase/agent/log)
       event-sink.ts       # events.jsonl writer + in-process listener fan-out (terminal UI + viewer)

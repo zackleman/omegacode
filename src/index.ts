@@ -21,6 +21,8 @@ export type {
 export { runWorkflow } from "./runtime/run.js"
 export type { RunOptions, RunOutcome, RunOverrides } from "./runtime/run.js"
 export { parseWorkflow, runInSandbox, WorkflowSyntaxError } from "./runtime/sandbox.js"
+export { listWorkflows, resolveWorkflowName, workflowDirs, WorkflowNotFoundError } from "./runtime/registry.js"
+export type { RegistryEntry, Tier } from "./runtime/registry.js"
 export { Journal, dataRoot, runDir } from "./runtime/journal.js"
 export type { AgentState, EventSink, WorkflowEvent, WorkflowEventInput } from "./runtime/events.js"
 export type { EventListener } from "./runtime/event-sink.js"

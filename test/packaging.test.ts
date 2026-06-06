@@ -327,9 +327,11 @@ describe("npm pack tarball contract (M31)", () => {
     writeFileSync(join(stage, "dist", "cli.js.map"), "{}\n")
     writeFileSync(join(stage, "dist", "web", "index.html"), "<html></html>")
     writeFileSync(join(stage, "dist", "web", "assets", "app.js"), "console.log(1)")
-    // skill/ is also in files.
+    // skill/ and builtins/ are also in files.
     mkdirSync(join(stage, "skill"), { recursive: true })
     writeFileSync(join(stage, "skill", "SKILL.md"), "# skill\n")
+    mkdirSync(join(stage, "builtins"), { recursive: true })
+    writeFileSync(join(stage, "builtins", "deep-research.workflow.js"), "export const meta = {}\n")
     // Decoys that MUST NOT end up in the tarball.
     mkdirSync(join(stage, "src", "dsl"), { recursive: true })
     writeFileSync(join(stage, "src", "dsl", "ambient.d.ts"), "export {}\n")
@@ -358,9 +360,10 @@ describe("npm pack tarball contract (M31)", () => {
     assert.ok(entries.some((e) => e.path.startsWith("dist/web/")), "viewer web assets must ship")
   })
 
-  test("includes LICENSE and the skill", () => {
+  test("includes LICENSE, the skill, and the builtin workflows", () => {
     assert.ok(has("LICENSE"))
     assert.ok(entries.some((e) => e.path.startsWith("skill/")))
+    assert.ok(entries.some((e) => e.path.startsWith("builtins/")), "builtin workflows must ship")
   })
 
   test("does NOT ship src/ or stray dotfiles (no surprises)", () => {
@@ -388,11 +391,13 @@ describe("real npm pack tarball (M31, post-build)", () => {
       "dist/ambient.d.ts",
       "dist/cli.js",
       "skill/SKILL.md",
+      "builtins/deep-research.workflow.js",
+      "builtins/code-review.workflow.js",
     ]) {
       assert.ok(paths.includes(required), `tarball missing ${required}`)
     }
     assert.ok(paths.some((p) => p.startsWith("dist/web/")), "tarball missing viewer assets dist/web/")
-    const allowed = /^(LICENSE|README\.md|package\.json|dist\/|skill\/)/
+    const allowed = /^(LICENSE|README\.md|package\.json|dist\/|skill\/|builtins\/)/
     const surprises = paths.filter((p) => !allowed.test(p))
     assert.deepEqual(surprises, [], `unexpected files in tarball: ${surprises.join(", ")}`)
     // Every exports target must actually exist in the tarball.

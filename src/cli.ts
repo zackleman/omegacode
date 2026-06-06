@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { runWorkflow, type RunOverrides } from "./runtime/run.js"
 import { parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
+import { listWorkflows, resolveWorkflowName, WorkflowNotFoundError } from "./runtime/registry.js"
 import { dataRoot, Journal, JournalNotFoundError, ResumePreconditionError } from "./runtime/journal.js"
 import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
@@ -43,6 +44,8 @@ const BOOLEAN_FLAGS = new Set([
   "claude",
   "agents",
   "help",
+  "project",
+  "force",
 ])
 
 /**
@@ -161,6 +164,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       return cmdServe(flags)
     case "runs":
       return cmdRuns(flags)
+    case "workflows":
+      return cmdWorkflows(flags)
+    case "save":
+      return cmdSave(flags)
     case "validate":
       return cmdValidate(flags)
     case "doctor":
@@ -371,10 +378,14 @@ function dirSize(dir: string): number {
 async function cmdRun(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: omegacode run <file.workflow.js> [--args <json>] [--provider codex|claude-code] [--fake] [--json]")
+    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code] [--fake] [--json]")
     process.exitCode = 1
     return
   }
+  // Resolve now, not in runWorkflow: a registry name (e.g. `omegacode run code-review`) must
+  // become a real file path before the run starts. The resume hints below keep printing the
+  // user's original arg — names re-resolve on the next invocation.
+  const resolvedFile = resolveFileOrName(file)
   const overrides: RunOverrides = {}
   const provider = enumFlag(flags, "provider", PROVIDERS)
   if (provider) overrides.provider = provider
@@ -435,7 +446,7 @@ async function cmdRun(flags: Flags): Promise<void> {
     : undefined
 
   const outcome = await runWorkflow({
-    file,
+    file: resolvedFile,
     args,
     overrides,
     resumeRunId,
@@ -460,14 +471,75 @@ async function cmdRun(flags: Flags): Promise<void> {
 async function cmdValidate(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: omegacode validate <file.workflow.js>")
+    console.error("usage: omegacode validate <file.workflow.js | name>")
     process.exitCode = 1
     return
   }
-  const source = readFileSync(resolve(file), "utf8")
+  const source = readFileSync(resolveFileOrName(file), "utf8")
   const { meta } = parseWorkflow(source)
   console.log(`ok: "${meta.name}" — ${meta.description}`)
   if (meta.phases) console.log("phases: " + meta.phases.map((p) => p.title).join(" → "))
+}
+
+/**
+ * Resolve a `run`/`validate` positional that is either a file path or a registry name. An
+ * existing path always wins. An arg that LOOKS like a path (separator, or a .js suffix) but
+ * doesn't exist is an error — it must not silently fall through to a registry lookup, which
+ * would run some same-named workflow instead of the file the user meant.
+ */
+function resolveFileOrName(arg: string): string {
+  const abs = resolve(arg)
+  if (existsSync(abs)) return abs
+  if (arg.includes("/") || arg.includes(sep) || arg.endsWith(".js")) {
+    throw new UsageError(`workflow file not found: ${arg}`)
+  }
+  return resolveWorkflowName(arg)
+}
+
+async function cmdWorkflows(flags: Flags): Promise<void> {
+  const entries = listWorkflows()
+  if (flags.json === true) {
+    process.stdout.write(JSON.stringify(entries, null, 2) + "\n")
+    return
+  }
+  if (entries.length === 0) {
+    console.log("(no saved workflows — use `omegacode save <file>` to add one)")
+    return
+  }
+  const width = Math.max(...entries.map((e) => e.name.length))
+  for (const e of entries) {
+    console.log(`${e.name.padEnd(width)}  ${`[${e.tier}]`.padEnd(9)}  ${e.description}`)
+  }
+}
+
+async function cmdSave(flags: Flags): Promise<void> {
+  const file = (flags._ as string[])[1]
+  if (!file) {
+    console.error("usage: omegacode save <file.workflow.js> [--project] [--force]")
+    process.exitCode = 1
+    return
+  }
+  const absFile = resolve(file)
+  if (!existsSync(absFile)) throw new UsageError(`file not found: ${file}`)
+
+  // Parse to validate the workflow AND to get its name — the registry resolves by meta.name,
+  // so meta.name IS the saved name (there is deliberately no --name flag: a filename-only
+  // rename would not change what `omegacode run <name>` matches).
+  const { meta } = parseWorkflow(readFileSync(absFile, "utf8"))
+  const name = meta.name
+  if (name.includes("/") || name.includes("\\") || name.includes("..") || name.startsWith(".") || name.includes("\0")) {
+    throw new UsageError(`meta.name is not a safe filename: "${name}"`)
+  }
+
+  const useProject = flags.project === true
+  const destDir = useProject ? join(process.cwd(), ".omegacode", "workflows") : join(dataRoot(), "workflows")
+  const dest = join(destDir, name + ".workflow.js")
+  if (existsSync(dest) && flags.force !== true) {
+    throw new UsageError(`${useProject ? "project" : "user"} workflow "${name}" already exists at ${dest} — use --force to overwrite`)
+  }
+  mkdirSync(destDir, { recursive: true })
+  copyFileSync(absFile, dest)
+  console.log(`saved "${name}" → ${dest}`)
 }
 
 async function cmdDoctor(): Promise<void> {
@@ -533,7 +605,7 @@ DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() /
 Each agent() spawns a real Codex (gpt-5.x) or Claude Code agent; you pick the provider per call.
 
 Usage:
-  omegacode run <file.workflow.js> [options]   Run a workflow
+  omegacode run <file.workflow.js | name> [options]   Run a workflow (by path or saved name)
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
       --provider codex|claude-code         default provider (per-agent opts override)
       --model <m>  --effort <e>  --sandbox read-only|workspace-write|danger-full-access
@@ -550,10 +622,19 @@ Usage:
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode runs [--prune --keep <N>] [--prune-stale]   List runs (--prune old, --prune-stale dead)
-  omegacode validate <file.workflow.js>         Parse + check meta without running
+  omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
+  omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name
+  omegacode validate <file.workflow.js | name>  Parse + check meta without running
   omegacode doctor                              Check codex/claude availability + data dir
   omegacode guide                               Print the full authoring guide (the skill text)
   omegacode install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs
+
+Named workflows resolve by meta.name across three tiers (highest first): project
+(.omegacode/workflows/ from cwd up to the repo root), user (~/.omegacode/workflows/), and the
+package built-ins. \`run\`/\`validate\` accept a bare name — anything with a path separator or
+.js suffix is treated as a file path. Workflows read their parameters from --args:
+  omegacode run deep-research --args '"<question>"'
+  omegacode run code-review [--args '{"target": "<ref|path>", "level": "high|xhigh|max"}']
 
 Runs persist to ~/.omegacode/runs/<id>/. The guide, the install-skill skill, and skill/SKILL.md
 are the same single source of truth — run \`omegacode guide\` to read it.`)
@@ -568,6 +649,7 @@ export function isUserFacingError(err: unknown): boolean {
   if (
     err instanceof UsageError ||
     err instanceof WorkflowSyntaxError ||
+    err instanceof WorkflowNotFoundError ||
     err instanceof WorkflowError ||
     err instanceof AgentError ||
     err instanceof AgentInterrupted ||

@@ -36,6 +36,7 @@
   "files": [
     "dist",
     "skill",
+    "builtins",
     "LICENSE"
   ],
   "engines": {

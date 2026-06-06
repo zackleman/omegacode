@@ -199,18 +199,28 @@ Every run has a runId (printed on completion). To resume after a script edit or 
 ## CLI commands
 
 ```
-omegacode run <file.workflow.js> [--args '<json>' | --args-file <f>]
+omegacode run <file.workflow.js | name> [--args '<json>' | --args-file <f>]
                                        [--provider codex|claude-code] [--model m] [--effort e]
                                        [--sandbox read-only|workspace-write|danger-full-access] [--cwd dir]
                                        [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--open]
 omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all runs
 omegacode runs [--prune --keep <N>]           List runs (or prune old ones)
-omegacode validate <file.workflow.js>         Parse + check meta without running
+omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
+omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name
+omegacode validate <file.workflow.js | name>  Parse + check meta without running
 omegacode doctor                              Check codex/claude availability + data dir
 omegacode install-skill [--claude] [--agents] Install this skill into agent skill dirs
 ```
 
 `--fake` runs with a fake worker (no real agents) for a fast smoke test; `--json` prints `{runId, status, url, result, error}` (and still starts the viewer). The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
+
+## Saved / named workflows
+
+`run` and `validate` accept a bare name instead of a path (anything with a path separator or `.js` suffix is treated as a file). A name is the workflow's **`meta.name`** — not its filename — and resolves across three tiers, highest precedence first: **project** (every `.omegacode/workflows/` from cwd up to the repo root; nearer shadows farther), **user** (`~/.omegacode/workflows/`), and the package **built-ins**. `omegacode save <file>` copies a validated workflow into the user tier (`--project` for the project tier; `--force` to overwrite); `omegacode workflows` lists everything visible.
+
+Two built-ins ship with the package, ports of Claude Code's bundled workflows:
+- **`deep-research`** — `omegacode run deep-research --args '"<question>"'`: scope → 5 parallel web searches → fetch/dedup top sources → 3-vote adversarial verification per claim → cited report.
+- **`code-review`** — `omegacode run code-review [--args '{"target": "...", "level": "high|xhigh|max"}']`: one finder per review angle, an independent verifier per finding (CONFIRMED/PLAUSIBLE/REFUTED), a gap-sweep at xhigh/max, ranked report.
 
 ## Running a workflow for a user (from an agent)
 
