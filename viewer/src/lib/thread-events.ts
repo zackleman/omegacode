@@ -1,6 +1,6 @@
 // Trimmed port of bb's ThreadEventItem model
 // (packages/domain/src/provider-event.ts). Only the item variants the
-// agent-workflows viewer materializes from a `ChatChunk[]` transcript are
+// omegacode viewer materializes from a `ChatChunk[]` transcript are
 // kept; bb's provider/system envelope events, zod schemas, and
 // background-task/web/plan variants were dropped since the viewer drives the
 // leaf timeline components directly rather than through the full event

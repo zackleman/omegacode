@@ -1,4 +1,4 @@
-# Agent Workflows — design
+# Omegacode — design
 
 A **standalone CLI** that runs **workflow files** written in a small JavaScript DSL
 (`agent()` / `parallel()` / `pipeline()` / `phase()` / `log()`) and orchestrates **coding agents** to do
@@ -12,8 +12,8 @@ No MCP server, no bb, no hosted service. Just a CLI, a DSL runtime, and two prov
 interface.
 
 > Repo path is `~/codex-workflow-mcp` (chosen name). It's neither MCP-specific nor Codex-specific, so
-> consider a provider-neutral name (e.g. `agent-workflows` / `conductor`) before first commit — the doc
-> uses the package name `agent-workflows` throughout.
+> consider a provider-neutral name (e.g. `omegacode` / `conductor`) before first commit — the doc
+> uses the package name `omegacode` throughout.
 
 ---
 
@@ -134,7 +134,7 @@ Claude tool-permissions) and **per-call effort** — both mapped in §6.4/§6.5.
  workflow file (.workflow.js)         ← agent-authored DSL: export const meta + body + return
         ▼
  ┌─────────────────────────────────────────────┐
- │ CLI  `agent-workflows run file --args …`     │
+ │ CLI  `omegacode run file --args …`     │
  │  • compile + sandbox the file (node:vm, §5)  │
  │  • inject DSL globals + RunContext (caps)    │
  │  • execute → await result → print            │
@@ -367,7 +367,7 @@ Read-only / independent agents share the base cwd. For **parallel agents that mu
 `agent({ worktree: true })` runs that agent in an isolated git worktree, **matching Claude Code's
 workflow-worktree behavior exactly**:
 
-- **Create.** `git worktree add <gitRoot>/.agent-workflows/worktrees/<runId>-<index>` on a fresh branch
+- **Create.** `git worktree add <gitRoot>/.omegacode/worktrees/<runId>-<index>` on a fresh branch
   `cw/<runId>-<index>`, then `git worktree lock` it. Creation is **serialized (concurrency 1)** even
   when the agents themselves run in parallel — concurrent `git worktree add` is racy. The agent's `cwd`
   becomes the worktree and its `sandbox` is forced to `workspace-write` scoped to it; the prompt gets a
@@ -386,7 +386,7 @@ to `git worktree add/remove/lock/unlock` + `git status` / `git rev-list`. **Work
 provider-agnostic** — both Codex and Claude honor a per-agent `cwd`, so it works identically on either
 backend (and is the recommended way to give a Claude write-agent a hard boundary, since Claude's
 `read-only` is a tool-gate, not an OS sandbox — §6.4). (Cosmetic divergence from Claude Code: the
-directory lives under `.agent-workflows/` instead of `.claude/`; the create/lock/serialize and
+directory lives under `.omegacode/` instead of `.claude/`; the create/lock/serialize and
 clean-vs-dirty/preserve-on-changes semantics are identical.)
 
 ---
@@ -410,7 +410,7 @@ Every run is journaled, so any run can be resumed — after a crash, a Ctrl-C, o
 **edit**. This is the headline iteration feature: change a late stage of an expensive workflow, re-run,
 and only the changed suffix actually calls Codex.
 
-**Journal.** Each `agent()` result is appended to `~/.agent-workflows/runs/<runId>/journal.jsonl` as
+**Journal.** Each `agent()` result is appended to `~/.omegacode/runs/<runId>/journal.jsonl` as
 `{ key, index, promptHash, optsHash, status, result, usage, threadId, worktreeBranch?, durationMs }`,
 alongside run metadata (`workflowFile`, `fileHash`, `args`, `seed`, `codexVersion`, defaults). It is
 append-only and fsync'd per result, so a hard kill loses at most the single in-flight agent.
@@ -461,7 +461,7 @@ makes "edit + re-run" cheap.
   wraps `{ result, usage, durationMs, agents: [...] }` for piping.
 
 ### 10.2 The viewer server (HTTP visualization)
-Every run already persists to `~/.agent-workflows/runs/<runId>/`, so the web UI is just a **reader of
+Every run already persists to `~/.omegacode/runs/<runId>/`, so the web UI is just a **reader of
 on-disk state** — no new source of truth, no coupling to the run process. Two pieces:
 
 - **Each run writes `events.jsonl`** to its run dir — the same phase/agent transitions + `log()` lines
@@ -469,7 +469,7 @@ on-disk state** — no new source of truth, no coupling to the run process. Two 
   events carry index, provider, model, state, tokens, durationMs, prompt/result previews). `journal.jsonl`
   stays the *resume* log (completed results only); `events.jsonl` is the *observability* log (live state,
   including in-flight and failed agents). Both are append-only.
-- **`agent-workflows serve [--port 4123]`** starts a small **localhost-only viewer server** that reads
+- **`omegacode serve [--port 4123]`** starts a small **localhost-only viewer server** that reads
   the runs directory:
   - `GET /` — a single-page dashboard listing all runs (active + recent), each as a live phase/agent tree.
   - `GET /api/runs`, `GET /api/runs/:id` (snapshot folded from `events.jsonl`),
@@ -514,7 +514,7 @@ viewer above — never a central process that runs workflows.
   browser via `serve`/`--open` while it runs.
 - **Detached/background.** `run --detach` double-forks a **detached run process** (stdio →
   `runs/<runId>/run.log`) that executes independently and writes journal + events as usual; attach with
-  the viewer or `agent-workflows tail <runId>`. Still one process per run — just backgrounded, no central
+  the viewer or `omegacode tail <runId>`. Still one process per run — just backgrounded, no central
   executor.
 - **Control (cancel/pause) from the UI — optional, additive.** Observation needs no channel back to the
   run. For *control*, a run can listen on `runs/<runId>/control.sock` (unix socket) or watch a
@@ -531,10 +531,10 @@ if ever built, that daemon would host the *same* `Worker` + runtime, and the vie
 ## 11. Configuration & auth
 
 - **Auth:** each worker inherits the host's existing provider auth — Codex login for `CodexWorker`,
-  `ANTHROPIC_API_KEY` / Claude Code login for `ClaudeWorker`. `agent-workflows doctor` checks **whichever
+  `ANTHROPIC_API_KEY` / Claude Code login for `ClaudeWorker`. `omegacode doctor` checks **whichever
   providers are enabled**: Codex via `model/list` succeeding, Claude via a trivial `query()` round-trip,
   printing actionable errors otherwise. A workflow only needs auth for the provider(s) it actually uses.
-- **Config** (`agent-workflows.config.{ts,json}`, + env + flags, increasing precedence): default
+- **Config** (`omegacode.config.{ts,json}`, + env + flags, increasing precedence): default
   `provider`, `model`, `effort`, `sandbox`, `approval`, `concurrency`, `cwd`, and per-provider settings
   (`codexBin` app-server path; Claude `model`/`pathToClaudeCodeExecutable`).
 
@@ -543,19 +543,19 @@ if ever built, that daemon would host the *same* `Worker` + runtime, and the vie
 ## 12. CLI surface
 
 ```
-agent-workflows run <file.workflow.js> [--args <json> | --arg k=v ... | --args-file f.json]
+omegacode run <file.workflow.js> [--args <json> | --arg k=v ... | --args-file f.json]
                                        [--provider codex|claude-code] [--cwd <dir>] [--model m] [--effort e]
                                        [--concurrency N] [--approve interactive|auto]
                                        [--json] [--verbose] [--dry-run]
-agent-workflows run <file> --resume <runId>   # re-run live; replay completed agents from the journal
-agent-workflows run <file> --resume-last      # resume the most recent run of this file
-agent-workflows run <file> [--detach] [--open | --ui]   # background the run / open the web UI
-agent-workflows serve [--port 4123]  # start the read-only viewer server (dashboard over all runs)
-agent-workflows tail <runId>         # stream a detached run's progress to the terminal
-agent-workflows runs [--file f]      # list runs (runId, file, status, #agents, when) for resume
-agent-workflows validate <file>      # compile the workflow, print its plan (static estimate)
-agent-workflows doctor [--provider]  # check enabled providers' binary/auth
-agent-workflows list [dir]           # list *.workflow.js in a directory (optional)
+omegacode run <file> --resume <runId>   # re-run live; replay completed agents from the journal
+omegacode run <file> --resume-last      # resume the most recent run of this file
+omegacode run <file> [--detach] [--open | --ui]   # background the run / open the web UI
+omegacode serve [--port 4123]  # start the read-only viewer server (dashboard over all runs)
+omegacode tail <runId>         # stream a detached run's progress to the terminal
+omegacode runs [--file f]      # list runs (runId, file, status, #agents, when) for resume
+omegacode validate <file>      # compile the workflow, print its plan (static estimate)
+omegacode doctor [--provider]  # check enabled providers' binary/auth
+omegacode list [dir]           # list *.workflow.js in a directory (optional)
 ```
 
 `--provider` sets the **default** worker for the run; individual `agent()` calls override it via
@@ -569,8 +569,8 @@ without calling any provider.
 ## 13. Repo layout
 
 ```
-agent-workflows/
-  package.json            # ESM, "bin": { "agent-workflows": "dist/cli.js" }
+omegacode/
+  package.json            # ESM, "bin": { "omegacode": "dist/cli.js" }
                           # deps: @anthropic-ai/claude-agent-sdk, ajv (schema validate); build: tsup
   tsconfig.json
   src/
@@ -644,7 +644,7 @@ hand-written for just the methods we use (start hand-written; generate if drift 
   provider; parallel editing agents don't clobber each other; a resumed worktree agent replays its
   return value + branch ref without re-running.
 - **M7 — Viewer server + web UI.** `events.jsonl` writer (folds in alongside the terminal renderer);
-  `agent-workflows serve` + the SPA dashboard with live SSE; `run --open`/`--detach`/`tail`. *Exit:*
+  `omegacode serve` + the SPA dashboard with live SSE; `run --open`/`--detach`/`tail`. *Exit:*
   `serve` shows all runs; opening a live run streams its tree updating in real time; a `--detach`ed run
   keeps going after the launching terminal closes and remains visible in the dashboard. (Control/cancel
   from the UI is a follow-up.)

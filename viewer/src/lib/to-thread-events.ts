@@ -1,4 +1,4 @@
-// Adapter: agent-workflows `ChatChunk[]` → bb-shaped `ThreadEventItem[]`.
+// Adapter: omegacode `ChatChunk[]` → bb-shaped `ThreadEventItem[]`.
 //
 // The viewer drives bb's leaf timeline components from this item list. Mapping
 // (per the port plan):

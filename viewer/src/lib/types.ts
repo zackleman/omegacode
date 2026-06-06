@@ -1,4 +1,4 @@
-// Mirrors the agent-workflows viewer API (src/server/serve.ts + runtime/events.ts + runtime/transcript.ts).
+// Mirrors the omegacode viewer API (src/server/serve.ts + runtime/events.ts + runtime/transcript.ts).
 
 export type ProviderId = "codex" | "claude-code" | (string & {})
 export type RunStatus = "started" | "completed" | "failed" | "interrupted" | "unknown"

@@ -264,7 +264,7 @@ export class CodexWorker implements Worker {
     )
 
     const initParams: InitializeParams = {
-      clientInfo: { name: "agent-workflows", version: "0.0.1" },
+      clientInfo: { name: "omegacode", version: "0.0.1" },
       capabilities: { experimentalApi: true },
     }
     await this.request("initialize", initParams)

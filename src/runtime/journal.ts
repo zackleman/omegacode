@@ -47,9 +47,9 @@ export interface LoadedJournal {
   startedOnly: Set<string>
 }
 
-/** Root data dir: ~/.agent-workflows (override with AGENT_WORKFLOWS_HOME). */
+/** Root data dir: ~/.omegacode (override with OMEGACODE_HOME). */
 export function dataRoot(): string {
-  return process.env.AGENT_WORKFLOWS_HOME ?? join(homedir(), ".agent-workflows")
+  return process.env.OMEGACODE_HOME ?? join(homedir(), ".omegacode")
 }
 
 export function runDir(runId: string): string {

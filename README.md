@@ -1,4 +1,4 @@
-# agent-workflows
+# omegacode
 
 Run JavaScript **workflow files** that orchestrate **Codex** and **Claude Code** agents with a small
 DSL — `agent()` / `parallel()` / `pipeline()` / `phase()` / `log()`. The capability target is Claude
@@ -49,4 +49,4 @@ return await agent(`Combine:\n${facts.join("\n")}`)
 
 Files are plain JS: `export const meta` first, then a body using the injected globals, ending in a
 top-level `return`. No imports — the globals are in scope. Use `now()`/`random()` (not `Date.now()`/
-`Math.random()`, which throw). Data dir: `~/.agent-workflows/runs/<runId>/`.
+`Math.random()`, which throw). Data dir: `~/.omegacode/runs/<runId>/`.

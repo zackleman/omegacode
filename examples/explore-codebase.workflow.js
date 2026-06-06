@@ -1,8 +1,8 @@
 // Explore a codebase: map the top-level structure, deep-dive each major area in parallel
 // (mixing Codex and Claude Code workers), then synthesize an architecture overview.
 //
-//   agent-workflows run examples/explore-codebase.workflow.js --open
-//   agent-workflows run examples/explore-codebase.workflow.js --args '{"dir":"/path/to/repo"}'
+//   omegacode run examples/explore-codebase.workflow.js --open
+//   omegacode run examples/explore-codebase.workflow.js --args '{"dir":"/path/to/repo"}'
 
 export const meta = {
   name: "explore-codebase",
@@ -10,7 +10,7 @@ export const meta = {
   phases: [{ title: "Map" }, { title: "Deep dive" }, { title: "Synthesize" }],
 }
 
-const dir = (args && args.dir) || "/Users/sawyerhood/agent-workflows"
+const dir = (args && args.dir) || "/Users/sawyerhood/omegacode"
 
 const AREAS_SCHEMA = {
   type: "object",

@@ -1,10 +1,10 @@
 {
-  "name": "agent-workflows",
+  "name": "omegacode",
   "version": "0.0.1",
   "description": "Run JS workflow files that orchestrate Codex and Claude Code agents (agent()/parallel()/pipeline()/phase()).",
   "type": "module",
   "bin": {
-    "agent-workflows": "dist/cli.js"
+    "omegacode": "dist/cli.js"
   },
   "exports": {
     ".": "./dist/index.js"

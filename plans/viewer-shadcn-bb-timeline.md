@@ -1,6 +1,6 @@
 # Plan: rebuild the viewer as a Vite + React + shadcn app that looks like bb's timeline
 
-Migrate the `agent-workflows` viewer from the current no-build vanilla-JS SPA to a **Vite + React 19 +
+Migrate the `omegacode` viewer from the current no-build vanilla-JS SPA to a **Vite + React 19 +
 Tailwind v4 + shadcn/ui** app whose run-detail / chat feed is a near-pixel match for **bb's thread
 timeline**. The strategy is not "reimplement bb's look" — it's **port bb's actual timeline + conversation
 components** (bb is already this exact stack) and feed them our data.
@@ -57,7 +57,7 @@ Endpoints stay as-is (`GET /api/runs`, `/api/runs/:id`, `/api/runs/:id/stream`,
 ## 3. Target architecture
 
 ```
-agent-workflows/
+omegacode/
   viewer/                      # NEW: the Vite + React + shadcn app (scaffolded by the bH32 preset)
     index.html, vite.config.ts, tsconfig.json, package.json
     src/
@@ -73,11 +73,11 @@ agent-workflows/
   src/server/serve.ts          # serves viewer/dist instead of the hand-written web/
 ```
 
-- **Build:** `viewer` is its own Vite app. `agent-workflows build` runs `vite build` (output
+- **Build:** `viewer` is its own Vite app. `omegacode build` runs `vite build` (output
   `viewer/dist`) and the existing tsup `onSuccess` copies `viewer/dist` → `dist/web` (so
   `node dist/cli.js serve` serves it, same as today). `serve.ts`'s `WEB_DIR` points at the built assets;
   its `/api/*` + SSE routes are unchanged.
-- **Dev:** `agent-workflows serve` keeps serving the API; `vite dev` (in `viewer/`) runs the UI with a
+- **Dev:** `omegacode serve` keeps serving the API; `vite dev` (in `viewer/`) runs the UI with a
   proxy: `server.proxy` forwards `/api` to the API server (default `:4123`) so SSE + fetch work in dev
   with HMR. A `viewer:dev` script wires this.
 - **Offline:** no CDNs/remote fonts — bundle Inter + Fira Code (or bb's fonts) as assets (Tailwind v4 +
@@ -184,7 +184,7 @@ agent-workflows/
 - **Streaming:** a live Codex run shows text streaming, the working shimmer, tool cards + colored output,
   with sticky-bottom autoscroll; reconnect (kill/restore network) resumes via `Last-Event-ID` without
   re-replaying.
-- **Build/serve:** `agent-workflows build && node dist/cli.js serve` serves the React app from
+- **Build/serve:** `omegacode build && node dist/cli.js serve` serves the React app from
   `dist/web`; offline (airplane mode) still renders.
 - **No regressions:** all existing API endpoints unchanged; `runs`/`doctor`/`run --open` still work.
 

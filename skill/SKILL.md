@@ -1,13 +1,13 @@
 ---
-name: agent-workflows
-description: Author and run multi-agent workflows with the `agent-workflows` CLI — JavaScript files that orchestrate Codex (gpt-5.x) and Claude Code agents deterministically via agent()/parallel()/pipeline()/phase(). Use when a task is big enough to decompose and run in parallel, when you want independent perspectives and adversarial checks before committing, or when the work is too large for one context (broad audits, migrations, multi-source research, exhaustive reviews). Covers the file shape, the DSL, mixing providers, structured output, worktree isolation, determinism, resume, the live viewer, and every CLI command.
+name: omegacode
+description: Author and run multi-agent workflows with the `omegacode` CLI — JavaScript files that orchestrate Codex (gpt-5.x) and Claude Code agents deterministically via agent()/parallel()/pipeline()/phase(). Use when a task is big enough to decompose and run in parallel, when you want independent perspectives and adversarial checks before committing, or when the work is too large for one context (broad audits, migrations, multi-source research, exhaustive reviews). Covers the file shape, the DSL, mixing providers, structured output, worktree isolation, determinism, resume, the live viewer, and every CLI command.
 metadata:
   type: reference
 ---
 
-# agent-workflows
+# omegacode
 
-Run a workflow file that orchestrates multiple agents deterministically. `agent-workflows run <file.workflow.js>` executes the file; it persists to `~/.agent-workflows/runs/<id>/` and prints a runId. Use `agent-workflows serve` (or `run --open`) to watch live progress. Each `agent()` call spawns a real **Codex** (gpt-5.x) or **Claude Code** agent — you pick the provider per call.
+Run a workflow file that orchestrates multiple agents deterministically. `omegacode run <file.workflow.js>` executes the file; it persists to `~/.omegacode/runs/<id>/` and prints a runId. Use `omegacode serve` (or `run --open`) to watch live progress. Each `agent()` call spawns a real **Codex** (gpt-5.x) or **Claude Code** agent — you pick the provider per call.
 
 A workflow structures work across many agents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context can't hold (migrations, audits, broad sweeps). The file is where you encode that structure: what fans out, what verifies, what synthesizes.
 
@@ -54,7 +54,7 @@ Agents are told their final text IS the return value (not a human-facing message
 
 ## Providers — codex vs claude-code
 
-Every agent() runs under a provider/model. **By default, do NOT set `provider` or `model` per agent** — each agent inherits the provider/model the workflow is being run with (`--provider` / `--model`, default `codex`), which is almost always what you want. Most workflows (including the canonical example and the patterns above) omit them entirely. Pin them only when the user explicitly asks for a specific provider/model, or you're confident a particular step needs a different one. `agent-workflows doctor` shows which providers are installed/authed.
+Every agent() runs under a provider/model. **By default, do NOT set `provider` or `model` per agent** — each agent inherits the provider/model the workflow is being run with (`--provider` / `--model`, default `codex`), which is almost always what you want. Most workflows (including the canonical example and the patterns above) omit them entirely. Pin them only when the user explicitly asks for a specific provider/model, or you're confident a particular step needs a different one. `omegacode doctor` shows which providers are installed/authed.
 
 The two providers:
 - **codex** (OpenAI, gpt-5.x) — the default. `opts.effort` tunes reasoning depth: `"minimal" | "low" | "medium" | "high" | "xhigh"`. Requires the `codex` CLI authenticated (ChatGPT login); its built-in tools (incl. hosted image generation) come from that auth, and it ignores `OPENAI_API_KEY`. Native structured output via a free-form working turn then a schema-constrained extraction turn.
@@ -199,15 +199,15 @@ Every run has a runId (printed on completion). To resume after a script edit or 
 ## CLI commands
 
 ```
-agent-workflows run <file.workflow.js> [--args '<json>' | --args-file <f>]
+omegacode run <file.workflow.js> [--args '<json>' | --args-file <f>]
                                        [--provider codex|claude-code] [--model m] [--effort e]
                                        [--sandbox read-only|workspace-write|danger-full-access] [--cwd dir]
                                        [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--open]
-agent-workflows serve [--port 4123] [--host h]      Live read-only web viewer of all runs
-agent-workflows runs [--prune --keep <N>]           List runs (or prune old ones)
-agent-workflows validate <file.workflow.js>         Parse + check meta without running
-agent-workflows doctor                              Check codex/claude availability + data dir
-agent-workflows install-skill [--claude] [--agents] Install this skill into agent skill dirs
+omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all runs
+omegacode runs [--prune --keep <N>]           List runs (or prune old ones)
+omegacode validate <file.workflow.js>         Parse + check meta without running
+omegacode doctor                              Check codex/claude availability + data dir
+omegacode install-skill [--claude] [--agents] Install this skill into agent skill dirs
 ```
 
-`--fake` runs with a fake worker (no real agents) for a fast smoke test; `--json` prints `{runId, status, result, error}`. The viewer (`serve` / `run --open`) reads `~/.agent-workflows/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
+`--fake` runs with a fake worker (no real agents) for a fast smoke test; `--json` prints `{runId, status, result, error}`. The viewer (`serve` / `run --open`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.

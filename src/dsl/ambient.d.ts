@@ -1,5 +1,5 @@
 // Ambient declarations for workflow file authors. Reference this from a workflow file with:
-//   /// <reference types="agent-workflows/ambient" />
+//   /// <reference types="omegacode/ambient" />
 // to get editor types for the injected globals (the file runs in a sandbox with no imports).
 
 import type { AgentOpts, PipelineStage } from "./types.js"

@@ -34,12 +34,12 @@ export async function createWorktree(args: {
 }): Promise<Worktree> {
   const name = `${args.runId}-${args.index}`
   const branch = args.branch ?? `aw/${name}`
-  const path = join(args.gitRoot, ".agent-workflows", "worktrees", name)
+  const path = join(args.gitRoot, ".omegacode", "worktrees", name)
   const base = await git(args.gitRoot, ["rev-parse", "HEAD"])
   await git(args.gitRoot, ["worktree", "add", "--detach", path, base])
   await git(path, ["checkout", "-B", branch])
   try {
-    await git(args.gitRoot, ["worktree", "lock", path, "--reason", `agent-workflows ${name}`])
+    await git(args.gitRoot, ["worktree", "lock", path, "--reason", `omegacode ${name}`])
   } catch {
     // lock is best-effort
   }

@@ -169,7 +169,7 @@ function dirSize(dir: string): number {
 async function cmdRun(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: agent-workflows run <file.workflow.js> [--args <json>] [--provider codex|claude-code] [--fake] [--json]")
+    console.error("usage: omegacode run <file.workflow.js> [--args <json>] [--provider codex|claude-code] [--fake] [--json]")
     process.exitCode = 1
     return
   }
@@ -222,9 +222,9 @@ async function cmdRun(flags: Flags): Promise<void> {
   } else if (outcome.status === "completed") {
     const r = outcome.result
     process.stdout.write((typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n")
-    process.stderr.write(`\nrunId: ${outcome.runId} — resume with: agent-workflows run ${file} --resume ${outcome.runId}\n`)
+    process.stderr.write(`\nrunId: ${outcome.runId} — resume with: omegacode run ${file} --resume ${outcome.runId}\n`)
   } else {
-    process.stderr.write(`\n${outcome.status}: ${outcome.error ?? ""}\nresume with: agent-workflows run ${file} --resume ${outcome.runId}\n`)
+    process.stderr.write(`\n${outcome.status}: ${outcome.error ?? ""}\nresume with: omegacode run ${file} --resume ${outcome.runId}\n`)
     process.exitCode = 1
   }
 }
@@ -232,7 +232,7 @@ async function cmdRun(flags: Flags): Promise<void> {
 async function cmdValidate(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: agent-workflows validate <file.workflow.js>")
+    console.error("usage: omegacode validate <file.workflow.js>")
     process.exitCode = 1
     return
   }
@@ -251,7 +251,7 @@ async function cmdDoctor(): Promise<void> {
       return "NOT FOUND"
     }
   }
-  console.log("agent-workflows doctor")
+  console.log("omegacode doctor")
   console.log(`  fake worker  : ok`)
   console.log(`  codex        : ${check("codex", ["--version"])}`)
   console.log(`  claude-code  : ${check("claude", ["--version"])}`)
@@ -290,7 +290,7 @@ async function cmdInstallSkill(flags: Flags): Promise<void> {
   if (both || wantClaude) targets.push(join(homedir(), ".claude", "skills"))
   if (both || wantAgents) targets.push(join(homedir(), ".agents", "skills"))
   for (const base of targets) {
-    const dest = join(base, "agent-workflows")
+    const dest = join(base, "omegacode")
     mkdirSync(dest, { recursive: true })
     writeFileSync(join(dest, "SKILL.md"), body)
     console.log(`installed skill → ${join(dest, "SKILL.md")}`)
@@ -298,14 +298,14 @@ async function cmdInstallSkill(flags: Flags): Promise<void> {
 }
 
 function printHelp(): void {
-  console.log(`agent-workflows — run JS workflow files that orchestrate Codex and Claude Code agents
+  console.log(`omegacode — run JS workflow files that orchestrate Codex and Claude Code agents
 
 A workflow is a .js file: \`export const meta = {...}\` then a body using the injected
 DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() / budget / args.
 Each agent() spawns a real Codex (gpt-5.x) or Claude Code agent; you pick the provider per call.
 
 Usage:
-  agent-workflows run <file.workflow.js> [options]   Run a workflow
+  omegacode run <file.workflow.js> [options]   Run a workflow
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
       --provider codex|claude-code         default provider (per-agent opts override)
       --model <m>  --effort <e>  --sandbox read-only|workspace-write|danger-full-access
@@ -319,15 +319,15 @@ Usage:
 
   By default \`run\` auto-starts the viewer (if not already up) and prints the run's URL.
 
-  agent-workflows serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
-  agent-workflows runs [--prune --keep <N>]           List runs (or prune old ones)
-  agent-workflows validate <file.workflow.js>         Parse + check meta without running
-  agent-workflows doctor                              Check codex/claude availability + data dir
-  agent-workflows guide                               Print the full authoring guide (the skill text)
-  agent-workflows install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs
+  omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
+  omegacode runs [--prune --keep <N>]           List runs (or prune old ones)
+  omegacode validate <file.workflow.js>         Parse + check meta without running
+  omegacode doctor                              Check codex/claude availability + data dir
+  omegacode guide                               Print the full authoring guide (the skill text)
+  omegacode install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs
 
-Runs persist to ~/.agent-workflows/runs/<id>/. The guide, the install-skill skill, and skill/SKILL.md
-are the same single source of truth — run \`agent-workflows guide\` to read it.`)
+Runs persist to ~/.omegacode/runs/<id>/. The guide, the install-skill skill, and skill/SKILL.md
+are the same single source of truth — run \`omegacode guide\` to read it.`)
 }
 
 main().catch((err) => {
