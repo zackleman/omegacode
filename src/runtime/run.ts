@@ -34,6 +34,8 @@ export interface RunOptions {
   quiet?: boolean
   /** Extra event listener (e.g. an embedded UI). */
   onEvent?: EventListener
+  /** Called once with the runId as soon as the run dir exists (e.g. to print the viewer URL). */
+  onStart?: (runId: string) => void
 }
 
 export interface RunOutcome {
@@ -66,6 +68,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
 
   ensureRunDir(runId)
+  opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
     journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs })

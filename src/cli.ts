@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -71,12 +73,53 @@ async function main(): Promise<void> {
 async function cmdServe(flags: Flags): Promise<void> {
   const port = flags.port ? Number(str(flags.port)) : 4123
   const host = str(flags.host)
-  const { url } = await startViewer({ port, host })
-  process.stderr.write(`viewer: ${url}  (reading ${join(dataRoot(), "runs")})\nctrl-c to stop\n`)
+  const idleShutdown = flags["idle-shutdown"] === true
+  const { url } = await startViewer({ port, host, idleShutdown })
+  process.stderr.write(`viewer: ${url}  (reading ${join(dataRoot(), "runs")})\n${idleShutdown ? "idle-shutdown on; " : ""}ctrl-c to stop\n`)
   await new Promise<void>((resolve) => {
     process.once("SIGINT", () => resolve())
     process.once("SIGTERM", () => resolve())
   })
+}
+
+/** Is a viewer already serving on this port? */
+function viewerUp(port: number): Promise<boolean> {
+  return new Promise((res) => {
+    const req = httpGet({ host: "127.0.0.1", port, path: "/api/runs", timeout: 500 }, (r) => {
+      r.resume()
+      res(r.statusCode === 200)
+    })
+    req.on("error", () => res(false))
+    req.on("timeout", () => {
+      req.destroy()
+      res(false)
+    })
+  })
+}
+
+/** Ensure a viewer is running on `port` (reuse if up, else spawn one detached with idle-shutdown). Returns the base URL. */
+async function ensureViewer(port: number): Promise<string> {
+  const url = `http://127.0.0.1:${port}/`
+  if (await viewerUp(port)) return url
+  const child = spawn(process.execPath, [process.argv[1]!, "serve", "--port", String(port), "--idle-shutdown"], {
+    detached: true,
+    stdio: "ignore",
+  })
+  child.unref()
+  for (let i = 0; i < 50; i++) {
+    if (await viewerUp(port)) break
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return url
+}
+
+function openBrowser(url: string): void {
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open"
+  try {
+    spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref()
+  } catch {
+    // ignore — the URL is already printed
+  }
 }
 
 async function cmdRuns(flags: Flags): Promise<void> {
@@ -152,6 +195,18 @@ async function cmdRun(flags: Flags): Promise<void> {
   const argsFile = str(flags["args-file"])
   if (argsFile) args = JSON.parse(readFileSync(resolve(argsFile), "utf8"))
 
+  // Auto-start the viewer (unless --no-serve / --json) and print the run's URL when it starts.
+  const wantServe = flags["no-serve"] !== true && flags.json !== true
+  const port = flags.port ? Number(str(flags.port)) : 4123
+  const base = wantServe ? await ensureViewer(port).catch(() => undefined) : undefined
+  const onStart = base
+    ? (runId: string) => {
+        const u = `${base}#/run/${runId}`
+        process.stderr.write(`view: ${u}\n`)
+        if (flags.open === true) openBrowser(u)
+      }
+    : undefined
+
   const outcome = await runWorkflow({
     file,
     args,
@@ -159,6 +214,7 @@ async function cmdRun(flags: Flags): Promise<void> {
     resumeRunId: str(flags.resume),
     fake: flags.fake === true,
     quiet: flags.json === true,
+    onStart,
   })
 
   if (flags.json === true) {
@@ -258,9 +314,12 @@ Usage:
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
       --json                               print {runId,status,result,error} as JSON
-      --open                               open the live viewer to this run
+      --open                               also open the browser to this run
+      --no-serve                           don't auto-start the viewer
 
-  agent-workflows serve [--port 4123] [--host h]      Live read-only web viewer of all runs
+  By default \`run\` auto-starts the viewer (if not already up) and prints the run's URL.
+
+  agent-workflows serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   agent-workflows runs [--prune --keep <N>]           List runs (or prune old ones)
   agent-workflows validate <file.workflow.js>         Parse + check meta without running
   agent-workflows doctor                              Check codex/claude availability + data dir

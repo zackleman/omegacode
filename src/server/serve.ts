@@ -20,6 +20,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB_CANDIDATES = [join(__dirname, "web"), join(__dirname, "..", "..", "viewer", "dist")]
 const WEB_DIR = WEB_CANDIDATES.find((p) => existsSync(p)) ?? WEB_CANDIDATES[0]!
 
+/** Live SSE connection count — drives idle self-shutdown for an auto-started viewer. */
+let sseClients = 0
+
 function runsDir(): string {
   return join(dataRoot(), "runs")
 }
@@ -317,6 +320,7 @@ async function tailJsonl(req: IncomingMessage, res: HttpServerResponse, filePath
     "x-accel-buffering": "no",
   })
   res.write(": connected\n\n")
+  sseClients += 1
 
   // Track byte offset consumed so we only emit newly-appended whole lines.
   let offset = 0
@@ -394,6 +398,7 @@ async function tailJsonl(req: IncomingMessage, res: HttpServerResponse, filePath
   const cleanup = (): void => {
     if (closed) return
     closed = true
+    sseClients = Math.max(0, sseClients - 1)
     ac.abort()
     if (heartbeat) clearInterval(heartbeat)
     res.end()
@@ -563,7 +568,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 // Public entry point
 // ---------------------------------------------------------------------------
 
-export function startViewer(opts: { port?: number; host?: string }): Promise<{ url: string; close: () => Promise<void> }> {
+export function startViewer(opts: {
+  port?: number
+  host?: string
+  /** Self-terminate when no SSE client is connected and no run is active (for an auto-started viewer). */
+  idleShutdown?: boolean
+  idleMs?: number
+}): Promise<{ url: string; close: () => Promise<void> }> {
   const host = opts.host ?? "127.0.0.1"
   const port = opts.port ?? 0
 
@@ -583,6 +594,35 @@ export function startViewer(opts: { port?: number; host?: string }): Promise<{ u
       const actualPort = typeof addr === "object" && addr ? addr.port : port
       const displayHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host
       const url = `http://${displayHost.includes(":") ? `[${displayHost}]` : displayHost}:${actualPort}/`
+
+      if (opts.idleShutdown) {
+        // Exit once there's been no SSE client and no run in the "started" state for idleMs.
+        const idleMs = opts.idleMs ?? 60_000
+        let lastActive = Date.now()
+        const timer = setInterval(() => {
+          void (async () => {
+            let active = sseClients > 0
+            if (!active) {
+              try {
+                active = (await listRuns()).some((r) => r.status === "started")
+              } catch {
+                active = false
+              }
+            }
+            if (active) {
+              lastActive = Date.now()
+              return
+            }
+            if (Date.now() - lastActive >= idleMs) {
+              clearInterval(timer)
+              server.close(() => process.exit(0))
+              setTimeout(() => process.exit(0), 2000).unref() // force-exit if sockets linger
+            }
+          })()
+        }, 15_000)
+        timer.unref() // don't keep the process alive on the timer alone
+      }
+
       resolve({
         url,
         close: () =>
