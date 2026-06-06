@@ -41,7 +41,7 @@ const flaky = await agent('grep CI logs for retry markers', { schema: FLAKY_SCHE
 The `meta` object must be a PURE LITERAL — no variables, function calls, spreads, or template interpolation. Required fields: `name`, `description`. Optional: `phases`. Use the SAME phase titles in meta.phases as in phase() calls — titles are matched exactly; a phase() call with no matching meta entry just gets its own progress group.
 
 Script body hooks:
-- agent(prompt: string, opts?: {provider?: 'codex' | 'claude-code', model?: string, effort?: string, schema?: object, label?: string, sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access', cwd?: string, instructions?: string, maxTurns?: number, worktree?: boolean, key?: string}): Promise<any> — spawn an agent. Without schema, returns its final text as a string. With schema (a JSON Schema), the agent is forced to return JSON matching it and agent() returns the validated object — no parsing needed. Returns null if the user skips the agent mid-run (filter with .filter(Boolean)). opts.provider picks `codex` (gpt-5.x, the default) or `claude-code` — mix freely across a workflow. opts.label overrides the display label. opts.model overrides the model for this agent call. opts.sandbox defaults to `read-only`; use `workspace-write` (write to cwd + network) only when the agent must write. opts.worktree: true runs the agent in a fresh git worktree — EXPENSIVE (setup + disk per agent), use ONLY when agents mutate files in parallel and would otherwise conflict; the worktree is auto-removed if unchanged. opts.key is a stable resume pin that survives prompt-wording/reordering edits.
+- agent(prompt: string, opts?: {provider?: 'codex' | 'claude-code', model?: string, effort?: string, schema?: object, label?: string, sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access', cwd?: string, instructions?: string, maxTurns?: number, worktree?: boolean, key?: string}): Promise<any> — spawn an agent. Without schema, returns its final text as a string. With schema (a JSON Schema), the agent is forced to return JSON matching it and agent() returns the validated object — no parsing needed. Returns null if the user skips the agent mid-run (filter with .filter(Boolean)). opts.provider / opts.model: **default to omitting both** — the agent inherits the provider and model the workflow is being run with (set by `--provider`/`--model`, default `codex`), which is almost always correct. Only set them when the user explicitly asks for a specific provider/model, or you're highly confident a particular step needs a different one. opts.label overrides the display label. opts.sandbox defaults to `read-only`; use `workspace-write` (write to cwd + network) only when the agent must write. opts.worktree: true runs the agent in a fresh git worktree — EXPENSIVE (setup + disk per agent), use ONLY when agents mutate files in parallel and would otherwise conflict; the worktree is auto-removed if unchanged. opts.key is a stable resume pin that survives prompt-wording/reordering edits.
 - pipeline(items, stage1, stage2, ...): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Item A can be in stage 3 while item B is still in stage 1. This is the DEFAULT for multi-stage work. Wall-clock = slowest single-item chain, not sum-of-slowest-per-stage. Every stage callback receives (prevResult, originalItem, index) — use originalItem/index in later stages to label work without threading context through stage 1's return value. A stage that throws drops that item to `null` and skips its remaining stages.
 - parallel(thunks: Array<() => Promise<any>>): Promise<any[]> — run tasks concurrently. This is a BARRIER: awaits all thunks before returning. A thunk that throws (or whose agent errors) resolves to `null` in the result array — the call itself never rejects, so `.filter(Boolean)` before using the results. Use ONLY when you genuinely need all results together.
 - log(message: string): void — emit a progress message to the user (shown as a narrator line above the progress tree)
@@ -54,30 +54,29 @@ Agents are told their final text IS the return value (not a human-facing message
 
 ## Providers — codex vs claude-code
 
-Every agent() runs under a provider. `provider: "codex"` is the default; `--provider` sets the default for a run; per-agent `opts.provider` overrides it; **mix providers freely within one workflow.** Both are real coding agents with their own tools (read files, run commands, search) — they differ mainly in tuning and setup:
+Every agent() runs under a provider/model. **By default, do NOT set `provider` or `model` per agent** — each agent inherits the provider/model the workflow is being run with (`--provider` / `--model`, default `codex`), which is almost always what you want. Most workflows (including the canonical example and the patterns above) omit them entirely. Pin them only when the user explicitly asks for a specific provider/model, or you're confident a particular step needs a different one. `agent-workflows doctor` shows which providers are installed/authed.
 
-- **codex** (OpenAI, gpt-5.x) — the default. Tune reasoning depth with `opts.effort` (`"low" | "medium" | "high"`). A strong default for the **fan-out / gather** end of a workflow: codebase reading, search, command-running, large-context exploration. Requires the `codex` CLI authenticated (ChatGPT login) — its built-in tools (incl. hosted image generation) come from that auth, and it ignores `OPENAI_API_KEY`. Structured output uses codex's native constrained decoding (a free-form working turn, then a schema-constrained extraction turn).
-- **claude-code** (Anthropic, Claude) — via the Claude Agent SDK. A strong choice for the **reduce / verify / synthesize** end: synthesis, judgment, careful writing, and adversarial verification (the skeptic in a verify pass). Requires the `claude` CLI / SDK available. Structured output is delivered on the final result only (intermediate messages stay free-form).
+The two providers:
+- **codex** (OpenAI, gpt-5.x) — the default. `opts.effort` (`"low" | "medium" | "high"`) tunes reasoning depth. Requires the `codex` CLI authenticated (ChatGPT login); its built-in tools (incl. hosted image generation) come from that auth, and it ignores `OPENAI_API_KEY`. Native structured output via a free-form working turn then a schema-constrained extraction turn.
+- **claude-code** (Anthropic) — via the Claude Agent SDK; requires the `claude` CLI / SDK available. Structured output is delivered on the final result only (intermediate messages stay free-form).
 
-The common shape is to use Codex agents to fan out and gather, then a Claude agent to synthesize or judge — but either provider works anywhere:
+Both honor `sandbox` (read-only by default) and `cwd`; `worktree: true` isolates parallel file edits regardless of provider.
+
+The default case — omit provider, so fan-out and synthesis run on whatever provider the workflow was invoked with:
 ```js
-// Codex fans out for breadth; Claude reduces with judgment.
 const findings = await parallel(AREAS.map(area => () =>
-  agent(`Inspect ${area} and list concrete issues.`, { provider: "codex", effort: "high", schema: FINDINGS_SCHEMA })))
-const report = await agent(
-  `Synthesize these area findings into one prioritized report:\n${JSON.stringify(findings.filter(Boolean), null, 2)}`,
-  { provider: "claude-code" })
+  agent(`Inspect ${area} and list concrete issues.`, { schema: FINDINGS_SCHEMA })))   // inherits the run's provider
+const report = await agent(`Synthesize into a prioritized report:\n${JSON.stringify(findings.filter(Boolean), null, 2)}`)
 return report
 ```
-A cross-provider verify pass — find with one provider, refute with the other so a single model's blind spots don't survive:
+Pin a provider only when you mean to — e.g. a deliberate cross-provider verify pass (propose on the run's provider, refute on a different one) when the user has asked for that diversity:
 ```js
 const verified = await pipeline(
   suspects,
-  s => agent(`Is this a real bug? ${s.desc}`, { provider: "codex", schema: VERDICT }),     // proposer
-  (v, s) => agent(`Try to REFUTE that ${s.desc} is a bug; default to refuted if unsure.`,  // independent skeptic
+  s => agent(`Is this a real bug? ${s.desc}`, { schema: VERDICT }),                          // run's provider
+  (v, s) => agent(`Try to REFUTE that ${s.desc} is a bug; default to refuted if unsure.`,
     { provider: "claude-code", schema: VERDICT }).then(r => ({ ...s, real: v.real && !r.refuted })))
 ```
-Run `agent-workflows doctor` to confirm both are installed/authed. Both honor `sandbox` (read-only by default) and `cwd`, and `worktree: true` isolates parallel file edits regardless of provider.
 
 Scripts are plain JavaScript, NOT TypeScript — type annotations (`: string[]`), interfaces, and generics fail to parse. The script body runs in an async context — use await directly. Standard JS built-ins (JSON, Math, Array, etc.) are available — EXCEPT `Date.now()`/`Math.random()`/argless `new Date()`, which throw (they would break resume) and are rejected by a submit-time lint; use the injected `now()`/`random()` instead, or pass timestamps in via `args`. No filesystem, network, or relative import/require in the workflow body (the agents do the I/O).
 
