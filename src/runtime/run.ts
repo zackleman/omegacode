@@ -7,9 +7,18 @@ import { join, resolve } from "node:path"
 import { DEFAULTS, type Effort, type ProviderId, type RunDefaults, type Sandbox } from "../dsl/types.js"
 import { DefaultWorkerFactory } from "../worker/factory.js"
 import { type EventListener, FileEventSink } from "./event-sink.js"
-import { determinismLint } from "./keys.js"
-import { ensureRunDir, Journal, type LoadedJournal, runDir, writeResult } from "./journal.js"
-import { Runtime } from "./primitives.js"
+import { determinismLint, KEY_VERSION } from "./keys.js"
+import {
+  checkResumePreconditions,
+  ensureRunDir,
+  Journal,
+  JournalNotFoundError,
+  listRunIds,
+  type LoadedJournal,
+  runDir,
+  writeResult,
+} from "./journal.js"
+import { checkSpecEnum, Runtime } from "./primitives.js"
 import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
@@ -22,6 +31,10 @@ export interface RunOverrides {
   cwd?: string
   concurrency?: number
   budget?: number | null
+  /** Forwarded to the Claude worker when provider === "claude-code". */
+  claudeModel?: string
+  /** Path to the claude-code executable (forwarded to the Claude worker). */
+  pathToClaudeCodeExecutable?: string
 }
 
 export interface RunOptions {
@@ -36,6 +49,10 @@ export interface RunOptions {
   onEvent?: EventListener
   /** Called once with the runId as soon as the run dir exists (e.g. to print the viewer URL). */
   onStart?: (runId: string) => void
+  /** Abort the run programmatically (embedders/tests) — same path as Ctrl-C (SIGINT/SIGTERM). */
+  signal?: AbortSignal
+  /** Hard ceiling on total workflow execution time (forwarded to the sandbox). Default: unbounded. */
+  execTimeoutMs?: number
 }
 
 export interface RunOutcome {
@@ -64,9 +81,15 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const defaults = resolveDefaults(parsed.meta, opts)
 
   const runId = opts.resumeRunId ?? newRunId()
-  const loaded: LoadedJournal = opts.resumeRunId
-    ? Journal.load(runId)
-    : { results: new Map(), startedOnly: new Set<string>() }
+  let loaded: LoadedJournal = { results: new Map(), indexByKey: new Map() }
+  if (opts.resumeRunId) {
+    // A typo'd / unknown run id must fail loudly: silently starting a fresh run under the typo'd id
+    // re-pays the whole workflow with no resume benefit.
+    if (!Journal.exists(runId)) throw new JournalNotFoundError(runId, listRunIds())
+    loaded = Journal.load(runId)
+    // A journaled result is only safe to replay if the file/args/key-version still match.
+    checkResumePreconditions(loaded.meta, { fileHash, args: opts.args ?? null, keyVersion: KEY_VERSION })
+  }
   const seed = loaded.meta?.seed ?? randomSeed()
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
 
@@ -74,7 +97,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
-    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs })
+    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION })
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
@@ -82,12 +105,22 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   if (opts.onEvent) listeners.push(opts.onEvent)
   const events = new FileEventSink(runId, { listeners })
 
-  const factory = new DefaultWorkerFactory({ fake: opts.fake, codexBin: process.env.CODEX_BIN })
+  const factory = new DefaultWorkerFactory({
+    fake: opts.fake,
+    codexBin: process.env.CODEX_BIN,
+    // Claude-specific factory defaults (L5). Only forwarded when the provider is claude-code; a
+    // per-call opts.model still overrides via AgentSpec.model.
+    claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined),
+    pathToClaudeCodeExecutable: opts.overrides?.pathToClaudeCodeExecutable,
+  })
 
   const ac = new AbortController()
   const onSig = () => ac.abort()
   process.once("SIGINT", onSig)
   process.once("SIGTERM", onSig)
+  // An embedder-provided signal aborts exactly the way Ctrl-C does.
+  if (opts.signal?.aborted) ac.abort()
+  else opts.signal?.addEventListener("abort", onSig, { once: true })
 
   events.emit({ type: "run", status: "started", runId, workflowFile: filePath })
 
@@ -110,17 +143,31 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
+  const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal })
   try {
-    const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal })
-    result = await runInSandbox({ body: parsed.body, filename: filePath, globals: runtime.globals() })
+    // The abort signal MUST reach the sandbox (M13 wiring): the vm timeout bounds only synchronous
+    // execution, so without it `await new Promise(() => {})` in a workflow body would hang this
+    // await forever after Ctrl-C — the finally below (interrupted status, events.close) never runs.
+    result = await runInSandbox({
+      body: parsed.body,
+      filename: filePath,
+      globals: runtime.globals(),
+      signal: ac.signal,
+      execTimeoutMs: opts.execTimeoutMs,
+    })
+    // Await any agent() the body launched without awaiting, so a late rejection can't crash the
+    // process after we've declared "completed".
+    await runtime.settle()
     writeResult(runId, result ?? null)
   } catch (err) {
     status = ac.signal.aborted ? "interrupted" : "failed"
     error = err instanceof Error ? err.message : String(err)
   } finally {
+    await runtime.settle()
     clearInterval(heartbeat)
     process.removeListener("SIGINT", onSig)
     process.removeListener("SIGTERM", onSig)
+    opts.signal?.removeEventListener("abort", onSig)
     await factory.shutdownAll()
     events.emit({ type: "run", status, runId, error })
     await events.close()
@@ -131,14 +178,28 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
 
 function resolveDefaults(meta: { defaultProvider?: ProviderId; defaultModel?: string; defaultSandbox?: Sandbox }, opts: RunOptions): RunDefaults {
   const o = opts.overrides ?? {}
+  // An invalid concurrency (0 / NaN / fractional) would build a Semaphore that never admits anyone:
+  // every agent() queues forever while the heartbeat keeps beating, so the deadman never flags it.
+  // Fail here, before the run dir / event sink / heartbeat exist.
+  const concurrency = o.concurrency ?? DEFAULTS.concurrency
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(`invalid concurrency: ${concurrency} — must be a positive integer`)
+  }
+  // An invalid sandbox/effort from meta.defaultSandbox or a library-caller override would flow
+  // unvalidated into every spec and fall off the worker policy switches (H14) — e.g. "readonly"
+  // (typo for "read-only") becomes effectively writable. Fail here, like concurrency above.
+  // resolveSpec re-checks the resolved per-call values, covering workflow-body opts too.
+  const sandbox = o.sandbox ?? meta.defaultSandbox ?? DEFAULTS.sandbox
+  checkSpecEnum("sandbox", sandbox)
+  checkSpecEnum("effort", o.effort)
   return {
     provider: o.provider ?? meta.defaultProvider ?? DEFAULTS.provider,
     model: o.model ?? meta.defaultModel,
     effort: o.effort,
-    sandbox: o.sandbox ?? meta.defaultSandbox ?? DEFAULTS.sandbox,
+    sandbox,
     approval: DEFAULTS.approval,
     cwd: resolve(o.cwd ?? process.cwd()),
-    concurrency: o.concurrency ?? DEFAULTS.concurrency,
+    concurrency,
     maxAgents: DEFAULTS.maxAgents,
     maxFanout: DEFAULTS.maxFanout,
     budget: o.budget ?? DEFAULTS.budget,

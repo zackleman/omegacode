@@ -1,22 +1,21 @@
 // FileEventSink: appends WorkflowEvents to runs/<runId>/events.jsonl (the observability log the
 // terminal renderer and the viewer server both read). Stamps each event with `t` (ms).
 
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
 import { join } from "node:path"
 import type { EventSink, WorkflowEvent, WorkflowEventInput } from "./events.js"
+import { JsonlWriter } from "./jsonl-writer.js"
 import { runDir } from "./journal.js"
 
 export type EventListener = (event: WorkflowEvent) => void
 
 export class FileEventSink implements EventSink {
-  private readonly stream: WriteStream
+  private readonly writer: JsonlWriter
   private readonly listeners: EventListener[]
   private readonly clock: () => number
 
   constructor(runId: string, opts: { listeners?: EventListener[]; clock?: () => number } = {}) {
-    const dir = runDir(runId)
-    mkdirSync(dir, { recursive: true })
-    this.stream = createWriteStream(join(dir, "events.jsonl"), { flags: "a" })
+    // A disk error on the observability log must not crash the run — degrade to best-effort.
+    this.writer = new JsonlWriter(join(runDir(runId), "events.jsonl"), { flags: "a" })
     this.listeners = opts.listeners ?? []
     // Wall-clock for the observability log is fine (it is NOT part of resume determinism).
     this.clock = opts.clock ?? (() => globalThis.Date.now())
@@ -24,12 +23,19 @@ export class FileEventSink implements EventSink {
 
   emit(event: WorkflowEventInput): void {
     const full = { ...event, t: this.clock() } as WorkflowEvent
-    this.stream.write(JSON.stringify(full) + "\n")
-    for (const l of this.listeners) l(full)
+    this.writer.writeRecord(full)
+    // A throwing listener (e.g. EPIPE on a stderr renderer) must not fail the agent or skip the rest.
+    for (const l of this.listeners) {
+      try {
+        l(full)
+      } catch {
+        // best-effort: one bad listener doesn't poison the others or the run
+      }
+    }
   }
 
   close(): Promise<void> {
-    return new Promise((resolve) => this.stream.end(resolve))
+    return this.writer.close()
   }
 }
 

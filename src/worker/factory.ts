@@ -1,5 +1,5 @@
 import type { ProviderId } from "../dsl/types.js"
-import type { Worker, WorkerFactory } from "./index.js"
+import { AgentError, type Worker, type WorkerFactory } from "./index.js"
 import { FakeWorker } from "./fake.js"
 import { CodexWorker } from "./codex.js"
 import { ClaudeWorker } from "./claude.js"
@@ -9,6 +9,8 @@ export interface FactoryOpts {
   fake?: boolean
   codexBin?: string
   claudeModel?: string
+  /** Path to the claude-code executable (forwarded to the SDK). */
+  pathToClaudeCodeExecutable?: string
 }
 
 export class DefaultWorkerFactory implements WorkerFactory {
@@ -26,8 +28,25 @@ export class DefaultWorkerFactory implements WorkerFactory {
 
   private create(id: ProviderId): Worker {
     if (this.opts.fake) return new FakeWorker()
-    if (id === "codex") return new CodexWorker({ bin: this.opts.codexBin })
-    return new ClaudeWorker({ model: this.opts.claudeModel })
+    switch (id) {
+      case "codex":
+        return new CodexWorker({ bin: this.opts.codexBin })
+      case "claude-code":
+        return new ClaudeWorker({
+          model: this.opts.claudeModel,
+          pathToClaudeCodeExecutable: this.opts.pathToClaudeCodeExecutable,
+        })
+      default: {
+        // Exhaustive: a new ProviderId must be handled here, and an unknown runtime value
+        // must fail loudly instead of silently routing to a billed provider.
+        const unknown: never = id
+        throw new AgentError({
+          provider: id,
+          code: "unknown_provider",
+          message: `unknown provider: ${String(unknown)}`,
+        })
+      }
+    }
   }
 
   async shutdownAll(): Promise<void> {

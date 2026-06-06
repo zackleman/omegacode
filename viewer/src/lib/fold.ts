@@ -1,7 +1,20 @@
 // Client-side port of serve.ts's foldSnapshot: fold a run's WorkflowEvent stream into a RunSnapshot.
 // The SSE stream replays all events then tails, so the viewer folds incrementally off the same data.
+//
+// Deliberately NOT ported: the server's heartbeat deadman. Heartbeats live in runs/<id>/.heartbeat —
+// a file the event stream never carries — so any client-side staleness guess could only key off
+// event timestamps, and a healthy run routinely goes quiet between events for longer than the stale
+// window (one long Bash call). That guess misfires: a live-but-quiet run folds "stale", the stream
+// latches closed, and nothing re-arms it. Staleness is the server's call (H19); useRunStream
+// overlays the snapshot poll's verdict via mergeRunStatus instead.
 
 import type { AgentSnapshot, PhaseSnapshot, RunSnapshot, RunStatus, WorkflowEvent } from "./types"
+
+/** Last filename segment, handling both POSIX (/) and Windows (\) separators (server uses basename). */
+export function runBaseName(file: string): string {
+  const segments = file.split(/[/\\]/)
+  return segments[segments.length - 1] ?? file
+}
 
 export function foldEvents(runId: string, events: WorkflowEvent[]): RunSnapshot {
   const agentByIndex = new Map<number, AgentSnapshot>()
@@ -74,7 +87,7 @@ export function foldEvents(runId: string, events: WorkflowEvent[]): RunSnapshot 
   const phases = [...phaseByIndex.values()].sort((p, q) => p.index - q.index)
   for (const p of phases) p.agents.sort((a, b) => a.index - b.index)
 
-  const base = workflowFile ? (workflowFile.split("/").pop() ?? "") : undefined
+  const base = workflowFile ? runBaseName(workflowFile) : undefined
   const name = base?.replace(/\.workflow\.[cm]?[jt]s$/i, "").replace(/\.[cm]?[jt]s$/i, "")
 
   return { runId, status, name, workflowFile, error, startedAt, endedAt, phases, agents, logs }

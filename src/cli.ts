@@ -1,33 +1,86 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { runWorkflow, type RunOverrides } from "./runtime/run.js"
-import { parseWorkflow } from "./runtime/sandbox.js"
-import { dataRoot, Journal } from "./runtime/journal.js"
+import { parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
+import { dataRoot, Journal, JournalNotFoundError, ResumePreconditionError } from "./runtime/journal.js"
+import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
-import type { Effort, ProviderId, Sandbox } from "./dsl/types.js"
+import { AgentError, AgentInterrupted } from "./worker/index.js"
+import { DEFAULTS, type Effort, type ProviderId, type Sandbox } from "./dsl/types.js"
 
-interface Flags {
+export interface Flags {
   _: string[]
   [k: string]: string | boolean | string[]
 }
 
-function parseArgs(argv: string[]): Flags {
+/** Raised for malformed CLI input; main() prints `.message` cleanly (no stack). */
+export class UsageError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "UsageError"
+  }
+}
+
+/**
+ * Flags that are pure booleans — they never take a value, so the token after them is NEVER
+ * consumed. Without this set, `--fake <file>` would silently swallow the file (running REAL
+ * billed agents), and `--json <x>`/`--open <x>`/`--no-serve <x>` would silently disable the
+ * flag. `--flag=true`/`--flag=false` is still accepted for explicitness.
+ */
+const BOOLEAN_FLAGS = new Set([
+  "fake",
+  "json",
+  "open",
+  "no-serve",
+  "prune",
+  "prune-stale",
+  "idle-shutdown",
+  "claude",
+  "agents",
+  "help",
+])
+
+/**
+ * Parse `argv` into positionals (`_`) and flags. Supports `--flag value`, `--flag=value`, and
+ * bare booleans. Known boolean flags (BOOLEAN_FLAGS) never consume the next token. A value-taking
+ * flag with no value (end of argv, or followed by another `--flag`) throws a UsageError rather
+ * than silently becoming `true` (which previously e.g. turned `--resume` into a fresh run).
+ */
+export function parseArgs(argv: string[]): Flags {
   const flags: Flags = { _: [] }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!
+    if (a === "--") {
+      // everything after `--` is positional
+      for (let j = i + 1; j < argv.length; j++) (flags._ as string[]).push(argv[j]!)
+      break
+    }
     if (a.startsWith("--")) {
-      const key = a.slice(2)
-      const next = argv[i + 1]
-      if (next === undefined || next.startsWith("--")) flags[key] = true
-      else {
-        flags[key] = next
-        i++
+      const body = a.slice(2)
+      const eq = body.indexOf("=")
+      if (eq >= 0) {
+        const key = body.slice(0, eq)
+        const value = body.slice(eq + 1)
+        if (BOOLEAN_FLAGS.has(key)) flags[key] = parseBool(key, value)
+        else flags[key] = value
+        continue
       }
+      const key = body
+      if (BOOLEAN_FLAGS.has(key)) {
+        flags[key] = true
+        continue
+      }
+      const next = argv[i + 1]
+      if (next === undefined || next === "--" || next.startsWith("--")) {
+        throw new UsageError(`--${key} requires a value`)
+      }
+      flags[key] = next
+      i++
     } else {
       ;(flags._ as string[]).push(a)
     }
@@ -35,12 +88,69 @@ function parseArgs(argv: string[]): Flags {
   return flags
 }
 
+function parseBool(key: string, value: string): boolean {
+  if (value === "true" || value === "") return true
+  if (value === "false") return false
+  throw new UsageError(`--${key} is a boolean flag; expected true/false, got "${value}"`)
+}
+
 function str(v: string | boolean | string[] | undefined): string | undefined {
   return typeof v === "string" ? v : undefined
 }
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2)
+/** Number() but empty/whitespace is NaN, not 0 — `--keep=` must not parse as 0 (= prune ALL runs). */
+function toNumber(raw: string): number {
+  return raw.trim() === "" ? NaN : Number(raw)
+}
+
+/** Parse a flag as a non-negative integer, throwing a friendly UsageError otherwise. */
+function intFlag(flags: Flags, name: string): number | undefined {
+  const raw = str(flags[name])
+  if (raw === undefined) return undefined
+  const n = toNumber(raw)
+  if (!Number.isInteger(n) || n < 0) throw new UsageError(`--${name} must be a non-negative integer, got "${raw}"`)
+  return n
+}
+
+/** Parse a flag as a positive integer (>= 1). */
+function positiveIntFlag(flags: Flags, name: string): number | undefined {
+  const n = intFlag(flags, name)
+  if (n !== undefined && n < 1) throw new UsageError(`--${name} must be a positive integer (>= 1), got "${str(flags[name])}"`)
+  return n
+}
+
+/** Parse a flag as a non-negative finite number. */
+function numberFlag(flags: Flags, name: string): number | undefined {
+  const raw = str(flags[name])
+  if (raw === undefined) return undefined
+  const n = toNumber(raw)
+  if (!Number.isFinite(n) || n < 0) throw new UsageError(`--${name} must be a non-negative number, got "${raw}"`)
+  return n
+}
+
+const PROVIDERS: ProviderId[] = ["codex", "claude-code"]
+const SANDBOXES: Sandbox[] = ["read-only", "workspace-write", "danger-full-access"]
+const EFFORTS: Effort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+function enumFlag<T extends string>(flags: Flags, name: string, allowed: readonly T[]): T | undefined {
+  const raw = str(flags[name])
+  if (raw === undefined) return undefined
+  if (!(allowed as readonly string[]).includes(raw)) {
+    throw new UsageError(`--${name} must be one of ${allowed.join(", ")}, got "${raw}"`)
+  }
+  return raw as T
+}
+
+/** Resolve --port, defaulting to 4123. Must be a valid TCP port (1-65535). */
+function portFlag(flags: Flags): number {
+  const raw = str(flags.port)
+  if (raw === undefined) return 4123
+  const n = toNumber(raw)
+  if (!Number.isInteger(n) || n < 1 || n > 65535) throw new UsageError(`--port must be an integer 1-65535, got "${raw}"`)
+  return n
+}
+
+export async function main(argv = process.argv.slice(2)): Promise<void> {
   const flags = parseArgs(argv)
   const cmd = (flags._ as string[])[0]
 
@@ -71,14 +181,33 @@ async function main(): Promise<void> {
 }
 
 async function cmdServe(flags: Flags): Promise<void> {
-  const port = flags.port ? Number(str(flags.port)) : 4123
+  const port = portFlag(flags)
   const host = str(flags.host)
   const idleShutdown = flags["idle-shutdown"] === true
-  const { url } = await startViewer({ port, host, idleShutdown })
+  const { url, close } = await startViewer({
+    port,
+    host,
+    idleShutdown,
+    // The library never exits the process itself (L21) — without this handler an --idle-shutdown
+    // viewer (what ensureViewer auto-spawns per run) closes its server when idle but lingers
+    // forever as a zombie process, kept alive by the SIGINT/SIGTERM listeners below.
+    onIdle: (h) => {
+      void h
+        .close()
+        .catch(() => {})
+        .finally(() => process.exit(0))
+    },
+  })
   process.stderr.write(`viewer: ${url}  (reading ${join(dataRoot(), "runs")})\n${idleShutdown ? "idle-shutdown on; " : ""}ctrl-c to stop\n`)
-  await new Promise<void>((resolve) => {
-    process.once("SIGINT", () => resolve())
-    process.once("SIGTERM", () => resolve())
+  // Stop on the first SIGINT/SIGTERM: close the server and exit so supervisors can terminate us.
+  await new Promise<void>((resolveStop) => {
+    const stop = (): void => {
+      void close()
+        .catch(() => {})
+        .finally(() => resolveStop())
+    }
+    process.once("SIGINT", stop)
+    process.once("SIGTERM", stop)
   })
 }
 
@@ -97,26 +226,56 @@ function viewerUp(port: number): Promise<boolean> {
   })
 }
 
-/** Ensure a viewer is running on `port` (reuse if up, else spawn one detached with idle-shutdown). Returns the base URL. */
-async function ensureViewer(port: number): Promise<string> {
+/**
+ * Ensure a viewer is running on `port` (reuse if up, else spawn one detached with idle-shutdown).
+ * Returns the base URL, or undefined if the viewer never came up — callers must NOT claim a URL on
+ * undefined (a dead URL is worse than none). Under tsx (dev / running from source via the loader)
+ * the detached `node dist/cli.js` spawn can't be relied on, so we skip the spawn and only reuse an
+ * already-running viewer.
+ */
+async function ensureViewer(port: number): Promise<string | undefined> {
   const url = `http://127.0.0.1:${port}/`
   if (await viewerUp(port)) return url
-  const child = spawn(process.execPath, [process.argv[1]!, "serve", "--port", String(port), "--idle-shutdown"], {
+  // Spawn this module's own on-disk path — NOT process.argv[1], which npm installs as a bin
+  // SYMLINK (the child must be the real runnable .js however we were invoked). Running from a .ts
+  // entrypoint means we're under a loader (tsx) that the detached node child won't have; spawning
+  // `node <thisfile.ts>` would fail. Don't promise a URL we can't deliver.
+  const entry = fileURLToPath(import.meta.url)
+  if (entry.endsWith(".ts")) return undefined
+
+  const child = spawn(process.execPath, [entry, "serve", "--port", String(port), "--idle-shutdown"], {
     detached: true,
     stdio: "ignore",
   })
+  child.on("error", () => {}) // spawn ENOENT etc. arrive async; swallow so we don't crash the run
   child.unref()
   for (let i = 0; i < 50; i++) {
-    if (await viewerUp(port)) break
+    if (await viewerUp(port)) return url
     await new Promise((r) => setTimeout(r, 100))
   }
-  return url
+  // Never came up — report failure so the caller doesn't print a dead URL.
+  return undefined
 }
 
-function openBrowser(url: string): void {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open"
+/**
+ * The opener command for a platform. win32: `start` is a cmd.exe builtin, not an executable, so it
+ * must go through `cmd /c start "" <url>` (the empty "" is the window-title arg `start` expects
+ * before the URL); spawning `start` directly always ENOENTs.
+ */
+export function browserOpenCommand(platform: NodeJS.Platform, url: string): [string, string[]] {
+  if (platform === "darwin") return ["open", [url]]
+  if (platform === "win32") return ["cmd", ["/c", "start", "", url]]
+  return ["xdg-open", [url]]
+}
+
+export function openBrowser(url: string): void {
+  const [cmd, args] = browserOpenCommand(process.platform, url)
   try {
-    spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref()
+    const child = spawn(cmd, args, { detached: true, stdio: "ignore" })
+    // ENOENT (no `xdg-open`, etc.) is delivered as an async 'error' event that the try/catch can't
+    // see — without this listener it becomes an uncaught exception that crashes the CLI mid-run.
+    child.on("error", () => {})
+    child.unref()
   } catch {
     // ignore — the URL is already printed
   }
@@ -131,7 +290,9 @@ async function cmdRuns(flags: Flags): Promise<void> {
   const ids = readdirSync(dir).filter((d) => d.startsWith("wf_"))
 
   if (flags.prune === true) {
-    const keep = flags.keep ? Math.max(0, Number(str(flags.keep))) : 50
+    // A non-numeric/negative --keep used to become NaN → slice(NaN) → delete EVERY run (journals
+    // and all). Validate it as a non-negative integer first.
+    const keep = intFlag(flags, "keep") ?? 50
     const byAge = ids
       .map((id) => ({ id, at: statSync(join(dir, id)).mtimeMs }))
       .sort((a, b) => b.at - a.at)
@@ -215,32 +376,55 @@ async function cmdRun(flags: Flags): Promise<void> {
     return
   }
   const overrides: RunOverrides = {}
-  const provider = str(flags.provider)
-  if (provider) overrides.provider = provider as ProviderId
+  const provider = enumFlag(flags, "provider", PROVIDERS)
+  if (provider) overrides.provider = provider
   const model = str(flags.model)
   if (model) overrides.model = model
-  const effort = str(flags.effort)
-  if (effort) overrides.effort = effort as Effort
-  const sandbox = str(flags.sandbox)
-  if (sandbox) overrides.sandbox = sandbox as Sandbox
+  const effort = enumFlag(flags, "effort", EFFORTS)
+  if (effort) overrides.effort = effort
+  const sandbox = enumFlag(flags, "sandbox", SANDBOXES)
+  if (sandbox) overrides.sandbox = sandbox
   const cwd = str(flags.cwd)
   if (cwd) overrides.cwd = resolve(cwd)
-  const concurrency = str(flags.concurrency)
-  if (concurrency) overrides.concurrency = Number(concurrency)
-  const budget = str(flags.budget)
-  if (budget) overrides.budget = Number(budget)
+  const concurrency = positiveIntFlag(flags, "concurrency")
+  if (concurrency !== undefined) overrides.concurrency = concurrency
+  const budget = numberFlag(flags, "budget")
+  if (budget !== undefined) overrides.budget = budget
+
+  // --resume, if present, must carry a runId — a bare `--resume` used to silently start a fresh run.
+  const resumeRunId = str(flags.resume)
+  if (resumeRunId !== undefined && resumeRunId.length === 0) throw new UsageError("--resume requires a runId")
 
   let args: unknown
   const argsStr = str(flags.args)
-  if (argsStr) args = JSON.parse(argsStr)
+  if (argsStr !== undefined) {
+    try {
+      args = JSON.parse(argsStr)
+    } catch (err) {
+      throw new UsageError(`--args is not valid JSON: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
   const argsFile = str(flags["args-file"])
-  if (argsFile) args = JSON.parse(readFileSync(resolve(argsFile), "utf8"))
+  if (argsFile) {
+    let raw: string
+    try {
+      raw = readFileSync(resolve(argsFile), "utf8")
+    } catch {
+      throw new UsageError(`--args-file not found: ${argsFile}`)
+    }
+    try {
+      args = JSON.parse(raw)
+    } catch (err) {
+      throw new UsageError(`--args-file is not valid JSON: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
   // Auto-start the viewer (unless --no-serve) and surface the run's URL. Under --json the
   // viewer still comes up, but stdout stays pure JSON: the `view:` line is suppressed and the
   // URL is returned in the JSON `url` field instead.
   const wantServe = flags["no-serve"] !== true
-  const port = flags.port ? Number(str(flags.port)) : 4123
+  const port = portFlag(flags)
+  // ensureViewer returns undefined when the viewer never came up — never claim a dead URL.
   const base = wantServe ? await ensureViewer(port).catch(() => undefined) : undefined
   const onStart = base
     ? (runId: string) => {
@@ -254,7 +438,7 @@ async function cmdRun(flags: Flags): Promise<void> {
     file,
     args,
     overrides,
-    resumeRunId: str(flags.resume),
+    resumeRunId,
     fake: flags.fake === true,
     quiet: flags.json === true,
     onStart,
@@ -353,7 +537,7 @@ Usage:
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
       --provider codex|claude-code         default provider (per-agent opts override)
       --model <m>  --effort <e>  --sandbox read-only|workspace-write|danger-full-access
-      --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default 8)
+      --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})
       --budget <N>                         output-token ceiling (enables budget.*)
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
@@ -375,10 +559,52 @@ Runs persist to ~/.omegacode/runs/<id>/. The guide, the install-skill skill, and
 are the same single source of truth — run \`omegacode guide\` to read it.`)
 }
 
-main().catch((err) => {
-  const msg = err instanceof Error ? err.message : String(err)
-  // Expected user errors (lint/syntax/usage) print clean; unexpected print the stack.
-  const expected = /determinism lint|must be the first statement|meta\.|not a valid literal|requires the cwd|exceeds the/.test(msg)
-  console.error(expected || !(err instanceof Error) ? msg : (err.stack ?? msg))
-  process.exitCode = 1
-})
+/**
+ * Decide whether an error is an expected, user-facing message (print clean) vs. an internal bug
+ * (print the stack). Classify by typed error class — not by matching the prose of `.message`,
+ * which silently regressed every time a message was reworded.
+ */
+export function isUserFacingError(err: unknown): boolean {
+  if (
+    err instanceof UsageError ||
+    err instanceof WorkflowSyntaxError ||
+    err instanceof WorkflowError ||
+    err instanceof AgentError ||
+    err instanceof AgentInterrupted ||
+    err instanceof JournalNotFoundError ||
+    err instanceof ResumePreconditionError
+  ) {
+    return true
+  }
+  // The determinism lint is the one user-facing message still thrown as a bare Error (from run.ts,
+  // which this subsystem doesn't own). Match its stable prefix until it gets its own error class.
+  return err instanceof Error && err.message.startsWith("determinism lint failed:")
+}
+
+/**
+ * Are we the CLI entrypoint (vs. imported as a module, e.g. from tests)? npm installs `bin`
+ * entries as SYMLINKS, and Node realpath-resolves the entry module — so import.meta.url is the
+ * real dist/cli.js while argv[1] keeps the symlink path. A plain path comparison never matches
+ * there, turning the installed CLI into a silent no-op; compare against the realpath of argv[1].
+ */
+function invokedDirectly(): boolean {
+  const argv1 = process.argv[1]
+  if (argv1 === undefined) return false
+  const self = fileURLToPath(import.meta.url)
+  if (self === resolve(argv1)) return true // direct invocation (also covers --preserve-symlinks-main)
+  try {
+    return self === realpathSync(argv1)
+  } catch {
+    return false // argv[1] isn't on disk — definitely not this module
+  }
+}
+
+// Only run main() when invoked as the CLI entrypoint — importing this module must not start the program.
+if (invokedDirectly()) {
+  main().catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    // Expected user errors (usage / lint / syntax / provider) print clean; unexpected print the stack.
+    console.error(isUserFacingError(err) || !(err instanceof Error) ? msg : (err.stack ?? msg))
+    process.exitCode = 1
+  })
+}

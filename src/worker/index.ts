@@ -31,12 +31,15 @@ export class AgentError extends Error {
   readonly provider: ProviderId
   readonly code: string
   readonly retryable: boolean
-  constructor(args: { provider: ProviderId; code: string; message: string; retryable?: boolean }) {
+  /** Tokens the failed turn consumed, when the provider reported them — failed turns still bill. */
+  readonly usage?: AgentUsage
+  constructor(args: { provider: ProviderId; code: string; message: string; retryable?: boolean; usage?: AgentUsage }) {
     super(args.message)
     this.name = "AgentError"
     this.provider = args.provider
     this.code = args.code
     this.retryable = args.retryable ?? false
+    this.usage = args.usage
   }
 }
 

@@ -134,7 +134,9 @@ export function toCodexSandboxPolicy(sandbox: Sandbox, cwd: string): CodexSandbo
       return {
         type: "workspaceWrite",
         writableRoots: [cwd],
-        networkAccess: true,
+        // Default to no network for workspace-write, matching codex's own default;
+        // network is an explicit opt-in concern, not silently granted here.
+        networkAccess: false,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       }
@@ -152,6 +154,8 @@ export function toCodexApprovalPolicy(sandbox: Sandbox, approval: Approval): Cod
 export function toCodexEffort(effort: Effort | undefined): CodexReasoningEffort | undefined {
   if (!effort) return undefined
   switch (effort) {
+    case "none":
+      return "none"
     case "minimal":
       return "minimal"
     case "low":
@@ -287,6 +291,71 @@ export interface CodexApprovalRequestParams {
   threadId: string
   turnId: string
   itemId: string
+}
+
+// ---------------------------------------------------------------------------
+// Inbound shape guards — protocol drift must surface as a typed failure, never
+// a silent permanent hang. The CodexWorker validates each notification's shape
+// before acting on it.
+// ---------------------------------------------------------------------------
+
+export interface InitializeResult {
+  /** "<originator>/<server version> (<os>) <terminal> (<client name>; <client version>)".
+   *  The InitializeResponse's one required field and the protocol's only version
+   *  surface — there is no protocol-version field or capability echo to negotiate
+   *  on. (Verified live against codex-cli 0.137.0, which returns
+   *  { userAgent, codexHome, platformFamily, platformOs }.) */
+  userAgent: string
+}
+
+/** Validate an initialize result against the app-server InitializeResponse and
+ *  return its `userAgent` (which embeds the server version, e.g. "…/0.137.0 (…)").
+ *  Returns undefined when the shape does not match — the peer is not a codex
+ *  app-server (or speaks a drifted protocol), and the handshake must fail loudly
+ *  here rather than wedge later when a turn never settles. */
+export function readInitializeUserAgent(result: unknown): string | undefined {
+  if (!isObject(result)) return undefined
+  const ua = result.userAgent
+  return typeof ua === "string" && ua.length > 0 ? ua : undefined
+}
+
+/** A notification carrying a string `threadId` and a string `delta`. */
+export function isThreadDelta(params: unknown): params is { threadId: string; delta: string } {
+  return isObject(params) && typeof params.threadId === "string" && typeof params.delta === "string"
+}
+
+/** A notification carrying a string `threadId` and an `item` object. */
+export function isThreadItem(params: unknown): params is { threadId: string; item: Record<string, unknown> } {
+  return isObject(params) && typeof params.threadId === "string" && isObject(params.item)
+}
+
+/** A notification carrying a string `threadId` and a `tokenUsage` object. */
+export function isTokenUsage(
+  params: unknown,
+): params is { threadId: string; tokenUsage: Record<string, unknown> } {
+  return isObject(params) && typeof params.threadId === "string" && isObject(params.tokenUsage)
+}
+
+/** A turn/completed notification carrying a string `threadId` and a `turn` object. */
+export function isTurnCompleted(
+  params: unknown,
+): params is { threadId: string; turn: Record<string, unknown> } {
+  return isObject(params) && typeof params.threadId === "string" && isObject(params.turn)
+}
+
+/** An `error` notification (no following turn/completed) we must settle on. */
+export function readErrorNotificationThreadId(params: unknown): string | undefined {
+  if (!isObject(params)) return undefined
+  return typeof params.threadId === "string" ? params.threadId : undefined
+}
+
+export function readErrorNotificationMessage(params: unknown): string {
+  if (!isObject(params)) return "codex error"
+  if (typeof params.message === "string") return params.message
+  const err = params.error
+  if (typeof err === "string") return err
+  if (isObject(err) && typeof err.message === "string") return err.message
+  return "codex error"
 }
 
 // ---------------------------------------------------------------------------

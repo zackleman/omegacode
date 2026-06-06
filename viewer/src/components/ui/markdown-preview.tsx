@@ -72,7 +72,7 @@ const MARKDOWN_SOURCE_COLOR_SCHEME_MEDIA_PATTERN = /^\(\s*prefers-color-scheme\s
 // strip unsafe elements, attributes, and URLs.
 const MARKDOWN_HTML_REHYPE_PLUGINS: MarkdownRehypePlugins = [rehypeRaw, rehypeSanitize]
 
-function MarkdownCode({ className: codeClassName, children, ...props }: MarkdownCodeProps) {
+function MarkdownCode({ className: codeClassName, children, node: _node, ...props }: MarkdownCodeProps) {
   const codeText = String(children ?? "").replace(/\n$/, "")
   const languageMatch = /language-(\w+)/u.exec(codeClassName || "")
   const language = languageMatch?.[1]

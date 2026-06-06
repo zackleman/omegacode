@@ -181,6 +181,14 @@ function tokenizeShell(command: string): ShellToken[] {
       continue
     }
     if (ch === "<" || ch === ">") {
+      // A bare leading fd number belongs to this redirect (`2>file`, `1>>log`), not a positional —
+      // fold it into the operator instead of flushing it as an argument (L24).
+      let fd = ""
+      if (/^[0-9]+$/u.test(current) && !hasQuoted) {
+        fd = current
+        current = ""
+        hasUnquoted = false
+      }
       flush()
       const next = command[i + 1]
       let op = ch
@@ -188,8 +196,13 @@ function tokenizeShell(command: string): ShellToken[] {
       if (ch === ">" && next === ">") {
         op = ">>"
         consumed = 2
+      } else if (next === "&") {
+        // fd duplication (`2>&1`, `>&2`) — not a real-file write; consume the operator and let the
+        // following fd token be skipped as the redirect target (L24).
+        op = `${ch}&`
+        consumed = 2
       }
-      tokens.push({ value: op, quoted: false })
+      tokens.push({ value: fd ? `${fd}${op}` : op, quoted: false })
       i += consumed - 1
       continue
     }
@@ -243,12 +256,33 @@ function isSedInPlace(token: string): boolean {
   return /^-i(?:$|[^-])/u.test(token)
 }
 
-/** Real-file write redirect (not /dev/null, not stderr-only) → disqualifies exploration. */
+// Redirect operators, with an optional leading fd (`2>`, `1>>`) and bash all-streams forms
+// (`&>`, `&>>`). fd-duplication forms (`2>&1`, `>&2`) carry a trailing `&`.
+const REDIRECT_OP = /^(?:[0-9]+|&)?(?:<|>|>>)(&)?$/u
+
+interface RedirectInfo {
+  /** A redirect that writes to a named file (not /dev/null, not an fd-dup). */
+  isFileWrite: boolean
+  /** Whether the redirect consumes a following target token (filename or fd). */
+  hasTarget: boolean
+}
+
+function classifyRedirect(value: string): RedirectInfo | null {
+  const m = REDIRECT_OP.exec(value)
+  if (!m) return null
+  const isFdDup = m[1] === "&"
+  const isOutput = value.includes(">")
+  // fd-dups (`2>&1`) and input redirects never create file content.
+  return { isFileWrite: isOutput && !isFdDup, hasTarget: true }
+}
+
+/** Real-file write redirect (not /dev/null, not stderr-only/fd-dup) → disqualifies exploration. */
 function segmentHasWrite(argTokens: ShellToken[]): boolean {
   for (let i = 0; i < argTokens.length; i += 1) {
     const t = argTokens[i]!
     if (t.quoted) continue
-    if (t.value === ">" || t.value === ">>") {
+    const redir = classifyRedirect(t.value)
+    if (redir?.isFileWrite) {
       const target = argTokens[i + 1]?.value
       if (target && target !== "/dev/null") return true
     }
@@ -294,7 +328,9 @@ function collectPositionals(argTokens: ShellToken[], flagsWithValue: ReadonlySet
   let i = 0
   while (i < argTokens.length) {
     const t = argTokens[i]!
-    if (!t.quoted && (t.value === ">" || t.value === ">>" || t.value === "<")) {
+    // Skip redirect operators (incl. fd-prefixed `2>` and fd-dup `2>&1`) and their target token so
+    // neither the operator nor `/dev/null`/`&1`/the fd leaks in as a positional (L24).
+    if (!t.quoted && classifyRedirect(t.value)) {
       i += 2
       continue
     }

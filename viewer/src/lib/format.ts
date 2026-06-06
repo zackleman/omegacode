@@ -17,7 +17,11 @@ export function fmtDuration(ms?: number): string {
 
 export function fmtCost(usd?: number): string {
   if (!usd) return ""
-  return usd >= 1 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(2)}`
+  // Sub-dollar costs are the typical case; two decimals collapses everything under a cent to
+  // "$0.00" (L22). Show more precision below $1 so small spends are legible.
+  if (usd >= 1) return `$${usd.toFixed(2)}`
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`
+  return `$${usd.toFixed(4)}`
 }
 
 export function timeAgo(t?: number, now: number = Date.now()): string {

@@ -3,8 +3,24 @@ import { useNavigate, useParams } from "react-router-dom"
 
 import { ProviderIcon, StatusGlyph } from "@/components/glyphs"
 import { fmtClock, fmtCost, fmtDuration, fmtTokens } from "@/lib/format"
-import { type AgentSnapshot, type AgentState, isTerminalAgent, type PhaseSnapshot, type RunSnapshot } from "@/lib/types"
+import {
+  type AgentSnapshot,
+  type AgentState,
+  isTerminalAgent,
+  isTerminalRun,
+  type PhaseSnapshot,
+  type RunSnapshot,
+  type RunStatus,
+} from "@/lib/types"
 import { cn } from "@/lib/utils"
+
+/**
+ * A dead run can't have a running agent — its events stream just stopped before the agent settled
+ * (SIGKILL / crash). Surface the run's fate instead of a perpetual live spinner (H19).
+ */
+function agentGlyphState(state: AgentState, runStatus: RunStatus): AgentState | RunStatus {
+  return state === "running" && isTerminalRun(runStatus) ? runStatus : state
+}
 
 /** Re-render every second while `active`, for live elapsed clocks. */
 function useTick(active: boolean): number {
@@ -24,7 +40,17 @@ function rollup(agents: AgentSnapshot[]): AgentState {
   return "queued"
 }
 
-function AgentRow({ agent, active, onClick }: { agent: AgentSnapshot; active: boolean; onClick: () => void }) {
+function AgentRow({
+  agent,
+  runStatus,
+  active,
+  onClick,
+}: {
+  agent: AgentSnapshot
+  runStatus: RunStatus
+  active: boolean
+  onClick: () => void
+}) {
   const meta = [
     agent.model,
     agent.outputTokens ? `${fmtTokens((agent.inputTokens ?? 0) + agent.outputTokens)} tok` : null,
@@ -52,17 +78,19 @@ function AgentRow({ agent, active, onClick }: { agent: AgentSnapshot; active: bo
           <span className="mt-0.5 block font-mono text-[11px] break-words text-destructive">└ {agent.error}</span>
         )}
       </span>
-      <StatusGlyph state={agent.state} className="mt-0.5 shrink-0" />
+      <StatusGlyph state={agentGlyphState(agent.state, runStatus)} className="mt-0.5 shrink-0" />
     </button>
   )
 }
 
 function PhaseGroup({
   phase,
+  runStatus,
   activeIndex,
   onPick,
 }: {
   phase: PhaseSnapshot
+  runStatus: RunStatus
   activeIndex: number | null
   onPick: (i: number) => void
 }) {
@@ -70,11 +98,12 @@ function PhaseGroup({
   const roll = rollup(phase.agents)
   const hasError = phase.agents.some((a) => a.state === "failed")
   const containsActive = activeIndex != null && phase.agents.some((a) => a.index === activeIndex)
-  // Auto-collapse a phase once it completes cleanly; a manual toggle overrides, and a
-  // phase that holds the open agent is always shown.
+  // Auto-collapse a phase once it completes cleanly; a manual toggle overrides. A phase that holds
+  // the open agent defaults to shown, but an explicit user toggle stays authoritative so the click
+  // isn't a no-op now and the phase doesn't snap closed later from stale state (L28).
   const autoCollapsed = roll === "done" && !hasError
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  const open = containsActive ? true : (userOpen ?? !autoCollapsed)
+  const open = userOpen ?? (containsActive ? true : !autoCollapsed)
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card/40">
@@ -88,14 +117,14 @@ function PhaseGroup({
         <span className={cn("text-[10px] text-muted-foreground transition-transform", !open && "-rotate-90")}>▾</span>
         <span className="text-sm font-semibold">{phase.title}</span>
         <span className="ml-auto flex items-center gap-2 font-mono text-[11px] text-subtle-foreground">
-          <StatusGlyph state={roll} />
+          <StatusGlyph state={agentGlyphState(roll, runStatus)} />
           {done}/{phase.agents.length}
         </span>
       </button>
       {open && (
         <div className="flex flex-col gap-0.5 p-1.5">
           {phase.agents.map((a) => (
-            <AgentRow key={a.index} agent={a} active={a.index === activeIndex} onClick={() => onPick(a.index)} />
+            <AgentRow key={a.index} agent={a} runStatus={runStatus} active={a.index === activeIndex} onClick={() => onPick(a.index)} />
           ))}
         </div>
       )}
@@ -144,12 +173,12 @@ export function RunDetail({ snap }: { snap: RunSnapshot | null }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3">
         {snap.phases.map((p) => (
-          <PhaseGroup key={p.index} phase={p} activeIndex={activeIndex} onPick={pick} />
+          <PhaseGroup key={p.index} phase={p} runStatus={snap.status} activeIndex={activeIndex} onPick={pick} />
         ))}
         {ungrouped.length > 0 && (
           <div className="flex flex-col gap-0.5 rounded-lg border border-border bg-card/40 p-1.5">
             {ungrouped.map((a) => (
-              <AgentRow key={a.index} agent={a} active={a.index === activeIndex} onClick={() => pick(a.index)} />
+              <AgentRow key={a.index} agent={a} runStatus={snap.status} active={a.index === activeIndex} onClick={() => pick(a.index)} />
             ))}
           </div>
         )}

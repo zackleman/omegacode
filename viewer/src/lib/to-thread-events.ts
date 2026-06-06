@@ -52,6 +52,14 @@ const FILE_TOOL_NAMES = new Set([
   "str_replace_editor",
 ])
 
+const SHELL_NAMES = new Set(["zsh", "bash", "sh", "dash", "ksh", "fish"])
+
+/** Final path segment of an executable token (`/bin/zsh` → `zsh`). */
+function baseExecutable(token: string): string {
+  const segments = token.split(/[/\\]/)
+  return segments[segments.length - 1] ?? token
+}
+
 function isCommandTool(name: string): boolean {
   return COMMAND_TOOL_NAMES.has(name)
 }
@@ -69,8 +77,14 @@ export function extractCommand(input: unknown): string {
     parts = ((input as Record<string, unknown>).command as unknown[]).map(String)
   }
   if (parts) {
-    const ci = parts.findIndex((p) => p === "-lc" || p === "-c" || p === "-ic" || p === "-lic")
-    return (ci >= 0 && parts[ci + 1] !== undefined ? parts.slice(ci + 1) : parts).join(" ")
+    // Only unwrap `<shell> -lc "<script>"` shapes: argv[0] must be a known shell, else a literal
+    // `-c` flag to another binary (`python3 -c …`, `rg -c …`) would wrongly strip the executable (L23).
+    const exe = parts[0] !== undefined ? baseExecutable(parts[0]) : ""
+    if (SHELL_NAMES.has(exe)) {
+      const ci = parts.findIndex((p) => p === "-lc" || p === "-c" || p === "-ic" || p === "-lic")
+      if (ci >= 0 && parts[ci + 1] !== undefined) return parts.slice(ci + 1).join(" ")
+    }
+    return parts.join(" ")
   }
   const s =
     typeof input === "string"
@@ -105,8 +119,10 @@ function fileChangeKind(name: string, args: Record<string, unknown> | undefined)
 
 function buildFileChanges(name: string, input: unknown): ThreadEventFileChange[] {
   const args = toRecord(input)
-  // A pre-shaped `changes` array (bb fileChange items already carry this).
-  const rawChanges = args?.changes
+  // A pre-shaped `changes` array (bb fileChange items already carry this). The codex worker emits
+  // the changes array *bare* (codexToolInput returns item.changes), so accept either an `input`
+  // that is the array itself or an object wrapping it (H16).
+  const rawChanges = Array.isArray(input) ? input : args?.changes
   if (Array.isArray(rawChanges)) {
     return rawChanges
       .map((c): ThreadEventFileChange | null => {
@@ -284,9 +300,15 @@ export function toThreadFeed(chunks: ChatChunk[]): ThreadFeed {
         break
       }
       case "tool-result": {
-        const target = (c.id && toolById.get(c.id)) || lastTool
+        // A result with an id we never saw is its own thing (e.g. codex image_generation has no
+        // tool chunk) — don't fall back to lastTool, that clobbers an unrelated tool's status (M26).
+        const matched = c.id ? toolById.get(c.id) : undefined
+        const target: PendingTool | null = matched ?? (c.id ? null : lastTool)
         if (target) {
           applyResult(target, c.output, c.isError)
+          // Consume the pairing so a stray second result can't re-apply to the same tool (M26).
+          if (c.id) toolById.delete(c.id)
+          if (target === lastTool) lastTool = null
         } else {
           // Orphan result — surface it as a completed tool call.
           flushText()

@@ -22,26 +22,34 @@
   "bin": {
     "omegacode": "dist/cli.js"
   },
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./ambient": {
+      "types": "./dist/ambient.d.ts"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "skill",
-    "src/dsl/ambient.d.ts"
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "pnpm -C viewer build && tsup",
+    "build": "node scripts/build-viewer.mjs && tsup && node scripts/postbuild.mjs",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
     "test": "node --test --import tsx ./test/*.test.ts",
     "start": "node dist/cli.js",
     "viewer:dev": "pnpm -C viewer dev",
-    "viewer:build": "pnpm -C viewer build"
+    "viewer:build": "node scripts/build-viewer.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.163",

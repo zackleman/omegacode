@@ -1,10 +1,11 @@
 // Per-agent transcript: the streaming conversation of one agent, written to
-// runs/<runId>/agents/<index>.jsonl. This is the source for the viewer's live chat-feed drilldown
-// (observability only — distinct from journal.jsonl, which stores the final result for resume).
+// runs/<runId>/agents/<index>.jsonl (or a journal-key-derived filename). This is the source for the
+// viewer's live chat-feed drilldown (observability only — distinct from journal.jsonl, which stores
+// the final result for resume).
 
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
 import { join } from "node:path"
 import type { ProviderId } from "../dsl/types.js"
+import { JsonlWriter } from "./jsonl-writer.js"
 import { runDir } from "./journal.js"
 
 export type ChatChunk =
@@ -26,6 +27,11 @@ export function agentTranscriptPath(runId: string, index: number): string {
   return join(agentsDir(runId), `${index}.jsonl`)
 }
 
+/** Path for a transcript named by an opaque file stem (e.g. a journal key) rather than an index. */
+export function agentTranscriptPathByName(runId: string, name: string): string {
+  return join(agentsDir(runId), `${sanitizeName(name)}.jsonl`)
+}
+
 // Coalescing + truncation keep transcripts from exploding (Codex streams token-level text deltas —
 // thousands of one-line chunks per answer). Text/reasoning deltas are buffered and flushed as one
 // chunk on a boundary; large tool I/O is head+tail truncated.
@@ -34,15 +40,22 @@ const TEXT_FLUSH_BYTES = 2048
 const TOOL_OUTPUT_MAX = 32 * 1024
 const TOOL_INPUT_MAX = 8 * 1024
 
+/** Optional way to override the transcript filename (runtime-core may key it by journal key). */
+export interface AgentTranscriptOpts {
+  /** Explicit filename stem under runs/<runId>/agents/ (no extension). */
+  name?: string
+}
+
 export class AgentTranscript {
-  private readonly stream: WriteStream
+  private readonly writer: JsonlWriter
   private pending: { kind: "text" | "reasoning"; text: string } | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(runId: string, index: number) {
-    mkdirSync(agentsDir(runId), { recursive: true })
+  constructor(runId: string, index: number, opts: AgentTranscriptOpts = {}) {
+    const path = opts.name ? agentTranscriptPathByName(runId, opts.name) : agentTranscriptPath(runId, index)
     // Truncate: a (re-)run of this agent replaces any partial transcript from a prior attempt.
-    this.stream = createWriteStream(agentTranscriptPath(runId, index), { flags: "w" })
+    // Disk errors degrade to best-effort and never crash the run (it's observability-only).
+    this.writer = new JsonlWriter(path, { flags: "w" })
   }
 
   write(chunk: ChatChunkInput): void {
@@ -66,7 +79,7 @@ export class AgentTranscript {
 
   close(): Promise<void> {
     this.flushPending()
-    return new Promise((resolve) => this.stream.end(resolve))
+    return this.writer.close()
   }
 
   private arm(): void {
@@ -87,7 +100,7 @@ export class AgentTranscript {
   }
 
   private writeLine(chunk: ChatChunkInput): void {
-    this.stream.write(JSON.stringify({ ...chunk, t: Date.now() } as ChatChunk) + "\n")
+    this.writer.writeRecord({ ...chunk, t: Date.now() } as ChatChunk)
   }
 }
 
@@ -105,8 +118,18 @@ function capInput(input: unknown, max: number): unknown {
   try {
     s = JSON.stringify(input)
   } catch {
-    return input
+    // Unserializable input (cycles/BigInt) — substitute a placeholder so writeLine never re-throws.
+    return "[unserializable tool input]"
   }
-  if (typeof s !== "string" || s.length <= max) return input
+  if (typeof s !== "string") return "[unserializable tool input]"
+  if (s.length <= max) return input
   return truncate(s, max)
+}
+
+/** Keep a key-derived name to a safe single path segment (no separators / traversal). */
+function sanitizeName(name: string): string {
+  // Map anything outside a safe set to "_", then strip leading dots so the result can never be
+  // "."/".." or a hidden-dotfile traversal. The result is always a single path segment.
+  const cleaned = name.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "")
+  return cleaned.length > 0 ? cleaned : "agent"
 }

@@ -26,9 +26,16 @@ export function StatusGlyph({ state, className, quiet }: { state: AgentState | R
     return <Icon name="AlertCircle" className={cn("size-3.5 text-muted-foreground", className)} aria-label="stale (run died)" />
   }
   if (state === "skipped") return null
-  // done / completed
-  if (quiet) return null
-  return <Icon name="CircleCheck" className={cn("size-3.5 text-success", className)} aria-label="done" />
+  if (state === "unknown") {
+    // A run dir with no terminal/started event yet — neutral, not a green "done" check (L26).
+    return <Icon name="Info" className={cn("size-3.5 text-muted-foreground/50", className)} aria-label="unknown" />
+  }
+  if (state === "done" || state === "completed") {
+    if (quiet) return null
+    return <Icon name="CircleCheck" className={cn("size-3.5 text-success", className)} aria-label="done" />
+  }
+  // Exhaustiveness guard: any new status renders neutral instead of a misleading done-check (L26).
+  return <Icon name="Info" className={cn("size-3.5 text-muted-foreground/50", className)} aria-label="unknown" />
 }
 
 /** Provider brand mark (OpenAI for codex, Anthropic/Claude for claude-code). */

@@ -2,7 +2,7 @@
 // apps/app/src/components/thread/timeline/TerminalOutputBlock.tsx
 // (only import paths adjusted to the viewer's layout). The ANSI→themed-HTML
 // mapping onto --ansi-0…15 / --ansi-bg-fg-N and the card chrome are bb's code.
-import { useMemo, type CSSProperties } from "react"
+import { useMemo, useRef, type CSSProperties } from "react"
 import Convert from "ansi-to-html"
 import { cn } from "@/lib/utils"
 import { getDetailScrollMaxHeightClass } from "@/components/ui/detail-scroll-size"
@@ -61,14 +61,40 @@ function addBackgroundContrastColors(html: string): string {
   return out.replaceAll(BACKGROUND_RESET_STYLE, BACKGROUND_RESET_CONTRAST_STYLE)
 }
 
-const ANSI_TO_HTML = new Convert({
+const ANSI_TO_HTML_OPTS = {
   escapeXML: true,
   newline: false,
-  stream: false,
   fg: "var(--foreground)",
   bg: "var(--background)",
   colors: ANSI_THEME_COLORS,
-})
+} as const
+
+const ANSI_TO_HTML = new Convert({ ...ANSI_TO_HTML_OPTS, stream: false })
+
+export interface IncrementalAnsiState {
+  source: string
+  html: string
+  convert: Convert
+}
+
+/**
+ * Incrementally convert streamed terminal output to themed HTML. Streamed output grows by
+ * appending, so re-converting the whole accumulated buffer on every chunk is O(n²) and freezes
+ * long runs (M28). We keep a stream-mode Convert that carries SGR state across calls and only feed
+ * the new suffix; a non-append change (replace/shrink) rebuilds from a fresh instance.
+ * Exported for unit coverage — the component holds the state in a ref, out of tests' reach.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- test-only export of pure logic
+export function convertIncremental(prev: IncrementalAnsiState | null, output: string): IncrementalAnsiState {
+  if (prev && output.startsWith(prev.source)) {
+    if (output.length === prev.source.length) return prev
+    const delta = output.slice(prev.source.length)
+    const appended = prev.convert.toHtml(delta)
+    return { source: output, html: prev.html + appended, convert: prev.convert }
+  }
+  const convert = new Convert({ ...ANSI_TO_HTML_OPTS, stream: true })
+  return { source: output, html: convert.toHtml(output), convert }
+}
 
 function stringLengthSum(values: readonly string[]): number {
   let length = 0
@@ -89,10 +115,26 @@ export function TerminalOutputBlock({
   output,
   streaming = false,
 }: TerminalOutputBlockProps) {
-  const renderedOutputHtml = useMemo(
-    () => (output.length > 0 ? addBackgroundContrastColors(ANSI_TO_HTML.toHtml(output)) : null),
-    [output],
-  )
+  // Incremental ANSI→HTML so a streamed buffer isn't fully re-converted on every chunk (M28): the
+  // append-only fast path converts just the new suffix and reuses the carried SGR state. The running
+  // state is held in a ref (the cross-render handle React's own streaming requires); a one-shot
+  // convert handles terminal/non-append output. Computed synchronously so the HTML never lags a frame.
+  const ansiState = useRef<IncrementalAnsiState | null>(null)
+  /* eslint-disable react-hooks/refs -- incremental stream conversion carries SGR state across renders */
+  const renderedOutputHtml = useMemo(() => {
+    if (output.length === 0) {
+      ansiState.current = null
+      return null
+    }
+    if (streaming) {
+      const next = convertIncremental(ansiState.current, output)
+      ansiState.current = next
+      return addBackgroundContrastColors(next.html)
+    }
+    ansiState.current = null
+    return addBackgroundContrastColors(ANSI_TO_HTML.toHtml(output))
+  }, [output, streaming])
+  /* eslint-enable react-hooks/refs */
 
   const showExitCode = exitCode !== null
   const outputContentKey = terminalScrollContentKey({

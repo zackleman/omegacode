@@ -1,4 +1,5 @@
-import { AgentError, type Worker } from "./index.js"
+import { setTimeout as delayAsync } from "node:timers/promises"
+import { AgentError, AgentInterrupted, type Worker } from "./index.js"
 import type { ProviderId } from "../dsl/types.js"
 
 export interface RetryOptions {
@@ -18,6 +19,7 @@ export async function withRetry<T>(
   const max = opts.maxMs ?? 30_000
   let lastErr: unknown
   for (let i = 0; i < attempts; i++) {
+    if (signal.aborted) throw new AgentInterrupted()
     try {
       return await fn()
     } catch (err) {
@@ -30,17 +32,10 @@ export async function withRetry<T>(
   throw lastErr
 }
 
+/** Abort-aware sleep; rejects with AgentInterrupted if the signal fires (or is already aborted). */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms)
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(t)
-        reject(new Error("aborted"))
-      },
-      { once: true },
-    )
+  return delayAsync(ms, undefined, { signal }).catch(() => {
+    throw new AgentInterrupted()
   })
 }
 

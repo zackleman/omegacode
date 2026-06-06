@@ -7,7 +7,7 @@ export type Sandbox = "read-only" | "workspace-write" | "danger-full-access"
 
 // Union of both providers' reasoning-effort levels. codex: none/minimal/low/medium/high/xhigh;
 // claude-code: low/medium/high/xhigh/max. Each worker maps to its nearest supported value.
-export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
 export type Approval = "never" | "on-request"
 

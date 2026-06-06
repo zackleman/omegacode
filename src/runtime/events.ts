@@ -31,6 +31,13 @@ export type WorkflowEvent =
       promptPreview?: string
       resultPreview?: string
       error?: string
+      /**
+       * When an agent's worktree is preserved, where its edits live (branch + on-disk path).
+       * Teardown runs after the terminal done/failed event, so these typically arrive on a
+       * trailing agent event that re-states the terminal state (renderers must not re-print it).
+       */
+      worktreeBranch?: string
+      worktreePath?: string
     }
   | { t: number; type: "log"; message: string }
 

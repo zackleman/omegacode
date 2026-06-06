@@ -11,9 +11,12 @@ script run from the command line.
 No MCP server, no bb, no hosted service. Just a CLI, a DSL runtime, and two provider workers behind one
 interface.
 
-> Repo path is `~/codex-workflow-mcp` (chosen name). It's neither MCP-specific nor Codex-specific, so
-> consider a provider-neutral name (e.g. `omegacode` / `conductor`) before first commit — the doc
-> uses the package name `omegacode` throughout.
+> **This document records the original design intent and is partly aspirational.** The shipped surface
+> has diverged in places — most notably the CLI command set and a handful of options described below that
+> were never built (called out inline as **not shipped**). **`skill/SKILL.md` is the canonical authoring
+> and usage guide** (run `omegacode guide` to read it); when this design doc and SKILL.md / `omegacode
+> --help` disagree, SKILL.md and the CLI win. §12 below lists the actual shipped CLI surface; §13 the
+> actual repo layout.
 
 ---
 
@@ -36,8 +39,9 @@ interface.
 - No MCP server surface, no bb integration. Two first-class providers (Codex + Claude Code); no others
   in v1.
 - No durable/hosted execution and **no executor daemon** — a run is one process that lives and dies with
-  the CLI (foreground, or `--detach`ed; §10.3). The web viewer is *read-only* — it visualizes runs from
-  their on-disk state, it never executes them.
+  the CLI (foreground; the original `--detach` background mode in §10.3 is **not shipped** — background an
+  agent-launched run from the calling shell instead). The web viewer is *read-only* — it visualizes runs
+  from their on-disk state, it never executes them.
 - No reattaching to an in-flight provider turn after a crash — an interrupted agent re-runs on resume;
   its orphaned session is abandoned, not reconnected (v1).
 - No nested `workflow()` (a workflow calling another workflow) in v1 — flat orchestration only.
@@ -77,9 +81,9 @@ user input, stream item/turn notifications, read the result off `turn/completed`
   `cwd?`, `approvalPolicy?`, `sandboxPolicy?` (`SandboxPolicy`), `model?`, `serviceTier?`, `effort?`
   (`ReasoningEffort`), `summary?`, `personality?`, `collaborationMode?`, and **`outputSchema?`**
   (Responses-API structured output — the key to `agent({schema})`).
-- `turn/steer` (inject into an in-flight turn), `turn/interrupt` (cancel), `thread/resume`,
-  `thread/unsubscribe`, `thread/archive`.
-- `model/list` (discover models + `supportedReasoningEfforts`).
+- `turn/interrupt` (cancel an in-flight turn). *(That is the full set the shipped worker calls —
+  `initialize`, `thread/start`, `turn/start`, `turn/interrupt`. The protocol's `turn/steer`,
+  `thread/resume`, `thread/unsubscribe`, `thread/archive`, and `model/list` are **not used**.)*
 
 **`UserInput`** is a discriminated union: `{type:"text", text, text_elements}` |
 `{type:"image", url}` | `{type:"localImage", path}` | `{type:"skill", name, path}` |
@@ -114,11 +118,10 @@ process (bb confirms this model). We cap concurrency and clean up threads when d
   **`result`** message (`SDKResultSuccess`) carries `result` (final text), **`structured_output`**,
   `usage`, `total_cost_usd`, `num_turns`. Errors come as `SDKResultError` with subtypes
   (`error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries`, …).
-- **Options we use:** `cwd`, `model`, `permissionMode` (`default`|`acceptEdits`|`bypassPermissions`|
-  `plan`), `allowedTools`/`disallowedTools`, `appendSystemPrompt` (instructions), `maxTurns`,
-  `settingSources: []` (SDK isolation), and **`outputFormat: { type: 'json_schema', schema }`** for
-  structured output (verified in the installed typings + the [Agent SDK structured-outputs
-  docs](https://code.claude.com/docs/en/agent-sdk/structured-outputs)).
+- **Options we use:** `cwd`, `model`, `maxTurns`, `settingSources: []` (SDK isolation), a
+  **`canUseTool`** callback (the sandbox tool-gate, §6.4), and **`outputFormat: { type: 'json_schema',
+  schema }`** for structured output (verified in the installed typings + the [Agent SDK
+  structured-outputs docs](https://code.claude.com/docs/en/agent-sdk/structured-outputs)).
 - **Auth:** the host's existing Claude auth (`ANTHROPIC_API_KEY` or Claude Code login).
 - **Process model:** each `query()` is its own session/subprocess (heavier per-call than Codex's
   multiplexed threads) — fine for v1; pool/reuse later if wide fan-out makes it bite (§8).
@@ -206,29 +209,33 @@ return await agent(
 )
 ```
 
-`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `now`, `random` are **injected globals** (no
-import line). A shipped ambient `codex-workflows.d.ts` types them so authors — human or agent — still
-get full editor autocomplete and typechecking. Schemas are **JSON Schema** (the portable default that
-maps straight to Codex `outputSchema`).
+`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `now`, `random`, `budget` are **injected
+globals** (no import line). Shipped ambient type declarations (`src/dsl/ambient.d.ts`, the
+`omegacode/ambient` types) type them so authors — human or agent — still get full editor autocomplete
+and typechecking. Schemas are **JSON Schema** (the portable default that maps straight to Codex
+`outputSchema`).
 
 **Primitives (injected globals):**
 
 | Primitive | Signature | Semantics |
 |---|---|---|
 | `agent` | `(prompt: string, opts?: AgentOpts) => Promise<string \| T>` | Run one agent turn (Codex or Claude Code, per `opts.provider`); resolve with its final text, or (with `schema`) a validated `T`. |
-| `parallel` | `(thunks: Array<() => Promise<T>>) => Promise<T[]>` | Barrier; run thunks concurrently (under the cap), await all. A thunk that throws rejects the array (or `parallelSettled` for `{status,value}[]`). |
-| `pipeline` | `(items, ...stages) => Promise<R[]>` | Each item streams through all stages independently (no barrier between stages); stage callbacks get `(prev, item, index)`. |
+| `parallel` | `(thunks: Array<() => Promise<T>>) => Promise<(T \| null)[]>` | Barrier; run thunks concurrently (under the cap), await all. A thunk that fails resolves to `null` in the results (filter with `.filter(Boolean)`); interrupts and cap/budget errors propagate and abort the fan-out. *(An earlier draft's `parallelSettled` was **not shipped**.)* |
+| `pipeline` | `(items, ...stages) => Promise<R[]>` | Each item streams through all stages independently (no barrier between stages); stage callbacks get `(prev, item, index)`. A failing item resolves to `null` and skips its remaining stages. |
 | `phase` | `(title: string) => void` | Open a named progress group; subsequent `agent()` calls render under it. |
 | `log` | `(msg: string) => void` | Emit a narrator line to the progress UI. |
-| `args` | `unknown` | The CLI-supplied input (`--args <json>` / `--arg k=v` / `--args-file`). |
+| `args` | `unknown` | The CLI-supplied input (`--args <json>` / `--args-file <f>`). |
 | `now` | `() => number` | Journal-seeded clock (deterministic across resume, unlike `Date.now()`). |
 | `random` | `() => number` | Journal-seeded RNG (deterministic across resume, unlike `Math.random()`). |
+| `budget` | `{ total, spent(), remaining() }` | The run's output-token ceiling (`--budget`, §8); `total` is `null` when no ceiling is set. |
 
 **`AgentOpts`:** `{ provider?: "codex" | "claude-code", label?, phase?, model?, effort?:
-"low"|"medium"|"high"|"xhigh", cwd?, sandbox?: "read-only"|"workspace-write"|"danger-full-access",
-approval?: "never"|"on-request", instructions?, schema?: JSONSchema, worktree?: boolean | string,
-key?: string }`.
-- `provider` selects the backend for this call; default = `meta.defaultProvider` → `--provider` → config.
+"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max" (the union of both providers' levels; each
+worker maps to its nearest supported value), cwd?, sandbox?:
+"read-only"|"workspace-write"|"danger-full-access", approval?: "never"|"on-request", instructions?,
+schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: number }`.
+- `provider` selects the backend for this call; default = `--provider` → `meta.defaultProvider` →
+  built-in (`codex`).
 - `schema` → the provider's native structured output (Codex `outputSchema` / Claude `outputFormat`),
   re-validated client-side (§6.3).
 - `sandbox`/`approval` map per provider (§6.4); `effort` maps natively on Codex, best-effort on Claude
@@ -251,32 +258,42 @@ Schema (the portable shape both providers accept).
 Because workflow files are **agent-authored** (untrusted), the engine runs them the way Claude Code's
 Workflows run — a **live async coroutine inside a hardened `node:vm`**, plus a journal:
 
-1. **Compile.** Parse the file (acorn; esbuild→JS first if authored in TS), validate the
-   `export const meta` pure literal, rewrite the body so every `await` funnels through a frozen
-   `Promise.resolve` trampoline, and compile to a `vm.Script` with `importModuleDynamically` throwing.
-2. **Sandbox.** Run it in `vm.createContext(globals, { codeGeneration: { strings: false, wasm: false } })`
-   — no `eval`/`new Function`/wasm-from-bytes — with intrinsics frozen and dangerous globals removed
-   (no `require`, `process`, `fs`, `fetch`, `import`). Inject only the DSL globals (`agent`, `parallel`,
-   `pipeline`, `phase`, `log`, `args`, `now`, `random`) + `console`/timers. Determinism shims make
-   `Date.now`/`Math.random`/`new Date()` throw; a static lint flags them at submit time.
+1. **Compile.** Extract and validate the leading `export const meta = {…}` literal (it must be the
+   file's first statement; the literal is evaluated alone in a throwaway, codegen-disabled vm
+   context), strip it while preserving line numbers, and compile the body to a `vm.Script` with
+   `importModuleDynamically` throwing. Workflow files are **plain JavaScript** — no TypeScript, no
+   imports. *(The original sketch's acorn AST parse, esbuild TS support, and per-`await`
+   `Promise.resolve` trampoline were **not shipped**; the meta literal is brace-scanned + vm-evaluated
+   instead.)*
+2. **Sandbox.** Run it in a `vm.createContext(globals, { codeGeneration: { strings: false, wasm:
+   false } })` — no `eval`/`new Function`/wasm-from-bytes — with no host globals reachable (no
+   `require`, `process`, `fs`, `fetch`, `import`). Inject only the DSL globals (`agent`, `parallel`,
+   `pipeline`, `phase`, `log`, `args`, `now`, `random`, `budget`) + `console` and
+   `setTimeout`/`clearTimeout`. Determinism shims make `Date.now`/`Math.random`/`new Date()` throw,
+   and the determinism-critical intrinsics (`Date`, `Math`) are frozen so the shims can't be
+   reassigned; a static lint flags raw clock/RNG use at submit time. *(Full SES-style freezing of
+   every intrinsic is **not shipped**.)*
 3. **Execute — live coroutine.** The script runs as one live async function with real `await`s.
    `agent()` is a real async host function that spawns a provider turn (Codex or Claude Code, §6) and
    resolves when it completes; `parallel`/`pipeline` are real concurrency over those awaits. This is
    **identical to Claude Code's working model** — the script is *not* re-run per step; it holds one live
    execution. Each `agent()` first consults the journal and returns a completed result instantly on
-   resume (§9).
+   resume (§9). The vm `timeout` bounds the synchronous prefix; the async remainder races the run's
+   abort signal (and an optional execution-time ceiling) so an `await`-forever can't hang the CLI.
 
 The orchestration script's **only** capability is calling `agent()`; everything dangerous (writes,
 commands, network) happens inside the **provider** subagents it spawns (Codex or Claude Code), gated by
 each agent's `sandbox`/approval policy (§6.4) — the script itself cannot touch the host. Same defense
 posture as Claude Code, where an approved dynamic workflow acts only through its subagents.
 
-- **Failure** = the run throws; the CLI prints the error, interrupts in-flight turns, archives spawned
-  threads, exits non-zero — the journal is intact, so `--resume` continues from the last completed agent.
-- **SIGINT (Ctrl-C)** = `turn/interrupt` active turns + archive/unsubscribe, then exit; fully resumable.
-- **Approval gate.** Before running an agent-authored workflow the CLI shows the script + its inferred
-  phase/agent plan and asks to proceed (Claude Code's "Run a dynamic workflow?" analog); `--yes` or an
-  allowlist skips it for trusted/CI use.
+- **Failure** = the run throws; the CLI prints the error, interrupts in-flight turns, and exits
+  non-zero — the journal is intact, so `--resume` continues from the last completed agent.
+- **SIGINT (Ctrl-C)** = interrupt active turns + clean up provider sessions, then exit; fully resumable.
+- **Approval gate — not shipped.** The original design had the CLI show the script + its inferred
+  phase/agent plan and ask to proceed before running an agent-authored workflow (Claude Code's "Run a
+  dynamic workflow?" analog), with `--yes`/an allowlist for trusted/CI use. As shipped, `run` executes
+  immediately — review the file (or `omegacode validate` it) before running untrusted workflows. A
+  pre-launch gate remains a future direction.
 
 ---
 
@@ -299,8 +316,9 @@ type AgentResult = {
 }
 ```
 
-`agent(prompt, opts)` resolves the worker (`opts.provider` → `meta.defaultProvider` → `--provider` →
-config), then calls `worker.runAgent(...)`. One workflow can mix providers per call. The runtime keeps a
+`agent(prompt, opts)` resolves the worker (`opts.provider` → `--provider` → `meta.defaultProvider` →
+built-in default), then calls `worker.runAgent(...)`. One workflow can mix providers per call. The
+runtime keeps a
 small registry of live workers and lazily starts each provider the first time it's used.
 
 ### 6.1 `CodexWorker` (codex app-server)
@@ -310,18 +328,20 @@ small registry of live workers and lazily starts each provider the first time it
   false`) → `thread/start` returns a `threadId` → `turn/start` (input text, model, effort, sandboxPolicy,
   approvalPolicy, **`outputSchema`** when `schema` set). Subscribe by `threadId`: accumulate
   `item/agentMessage/delta`, capture the final `agentMessage` item, resolve on **`turn/completed`**;
-  surface `thread/tokenUsage/updated`. Cleanup with `thread/unsubscribe`/`thread/archive`.
-- Errors from `codexErrorInfo` (`UsageLimitExceeded`/429 → backoff+retry; `ContextWindowExceeded` →
-  fail). Interrupt via `turn/interrupt`.
+  surface `thread/tokenUsage/updated`. *(No per-thread cleanup is shipped — the worker never calls
+  `thread/unsubscribe`/`thread/archive`; threads end when the per-run app-server process exits.)*
+- Errors from `codexErrorInfo` (`UsageLimitExceeded`/429 → classified retryable; `ContextWindowExceeded`
+  → fail). Interrupt via `turn/interrupt`.
 
 ### 6.2 `ClaudeWorker` (Claude Agent SDK)
 - `runAgent`: call `query({ prompt, options })` and iterate the `SDKMessage` async generator. Accumulate
   `assistant` text; on the terminal **`result`** message return `{ text: m.result, structured:
-  m.structured_output, usage: m.usage, status }`. Options: `cwd`, `model`, `permissionMode`,
-  `allowedTools`/`disallowedTools`, `appendSystemPrompt` (instructions), `outputFormat` (when `schema`
-  set), `maxTurns`, `settingSources: []`. Abort via the generator's abort/interrupt.
+  m.structured_output, usage: m.usage, status }`. Options: `cwd`, `model`, `maxTurns`,
+  `settingSources: []`, the `canUseTool` sandbox gate (§6.4), and `outputFormat` (when `schema` is
+  set). Abort via the generator's abort/interrupt.
 - One `query()` per agent (its own session/subprocess). Errors come as `SDKResultError` subtypes
-  (rate-limit/turns/budget/structured-retries) → mapped to the same typed `AgentError` + backoff.
+  (rate-limit/turns/budget/structured-retries) → mapped to the same typed `AgentError` with the same
+  retryable classification.
 
 ### 6.3 Structured output (`agent({schema})`) — native on both
 Both providers support structured output natively, so this is **not** prompt-and-parse and **not** an
@@ -331,32 +351,41 @@ injected tool on either side:
 
 Both run a built-in conformance retry (Claude surfaces `error_max_structured_output_retries` when it
 gives up). The worker returns the structured object and the runtime **re-validates** it client-side
-against the schema regardless (never trust the wire blindly); a validation miss fails the agent with the
-raw text retained. (An earlier draft wrongly claimed Claude lacked native structured output — corrected:
-it's `outputFormat`, confirmed in the SDK typings + docs.)
+against the schema regardless (never trust the wire blindly); a validation miss gets one corrective
+retry, then fails the agent with the raw text retained. (An earlier draft wrongly claimed Claude lacked
+native structured output — corrected: it's `outputFormat`, confirmed in the SDK typings + docs.)
+
+*As shipped, the codex worker runs `agent({schema})` as **two turns on one thread**: a free-form
+working turn, then a schema-constrained extraction turn carrying `outputSchema` — because Codex's
+`outputSchema` constrains every assistant message in a turn, which would cripple the working phase.*
 
 ### 6.4 Sandbox / approvals — the one semantic gap, mapped per provider
 The shared `sandbox` enum means different *kinds* of enforcement per provider:
 
-| `sandbox` | Codex (OS-level sandbox) | Claude Code (tool permissions) |
+| `sandbox` | Codex (OS-level sandbox) | Claude Code (`canUseTool` permission gate) |
 |---|---|---|
-| `read-only` | `sandboxPolicy: readOnly` | deny `Edit`/`Write`/`Bash` (+ `permissionMode: plan`) |
-| `workspace-write` | `workspaceWrite`, `writableRoots = cwd/worktree` | `acceptEdits` + allow `Edit`/`Write`/`Bash` |
-| `danger-full-access` | `dangerFullAccess` | `bypassPermissions` |
+| `read-only` | `sandboxPolicy: readOnly` | deny write/edit tools; shell limited to read-only commands |
+| `workspace-write` | `workspaceWrite`, `writableRoots = cwd/worktree` | write tools allowed, path-checked against the agent's `cwd` |
+| `danger-full-access` | `dangerFullAccess` | no tool gate |
 
 **Caveat worth stating in the workflow author's mental model:** on Codex, `read-only` is an OS guarantee
-(the agent *cannot* write even if it tries); on Claude it's a tool-gate (we don't hand it the write
-tools, but there's no OS jail). For untrusted/destructive tasks prefer Codex's sandbox or worktree
-isolation. Approvals default to non-interactive: Codex auto-answers `item/*requestApproval` per policy;
-Claude auto-allows via `permissionMode`/`canUseTool`. An interactive `--approve` mode prompts the human.
+(the agent *cannot* write even if it tries); on Claude it's a tool-gate (we deny the write tools and
+path-check the rest, but there's no OS jail — arbitrary shell can't be fully confined). For
+untrusted/destructive tasks prefer Codex's sandbox or worktree isolation. Approvals are
+non-interactive: Codex auto-answers `item/*requestApproval` — fail-closed (decline) for `read-only`
+agents and whenever the request can't be matched to a known turn, but command/file escalations from
+`workspace-write`/`danger-full-access` agents are **auto-accepted** (an accepted escalation can run
+outside the OS sandbox, so the hard fail-closed guarantee holds only for `read-only`); Claude is
+gated via `canUseTool`. *(The interactive `--approve` mode from the original design is **not
+shipped**.)*
 
 ### 6.5 Effort, errors, retries (normalized)
 - **Effort:** native per-turn on Codex (`turn/start.effort`); on Claude there is no clean per-`query()`
   effort knob, so it maps to model choice/settings or is omitted — documented, not faked.
-- **Errors/retries** are normalized at the worker boundary into a typed `AgentError` (rate-limit →
-  exponential backoff + retry; context-window → fail so the workflow can branch; connection → retry),
-  invisible to the DSL except via `log`. A per-turn **stall watchdog** (no events for N seconds) can
-  interrupt+retry on either provider; configurable, off by default.
+- **Errors/retries** are normalized at the worker boundary into a typed `AgentError` carrying a
+  retryable classification (rate-limit/connection → retryable; context-window/turn-cap → not),
+  invisible to the DSL except via `log`. *(The per-turn **stall watchdog** — interrupt+retry after N
+  seconds of silence — was designed but is **not shipped**.)*
 
 ---
 
@@ -368,7 +397,7 @@ Read-only / independent agents share the base cwd. For **parallel agents that mu
 workflow-worktree behavior exactly**:
 
 - **Create.** `git worktree add <gitRoot>/.omegacode/worktrees/<runId>-<index>` on a fresh branch
-  `cw/<runId>-<index>`, then `git worktree lock` it. Creation is **serialized (concurrency 1)** even
+  (`aw/<runId>-<index>`), then `git worktree lock` it. Creation is **serialized (concurrency 1)** even
   when the agents themselves run in parallel — concurrent `git worktree add` is racy. The agent's `cwd`
   becomes the worktree and its `sandbox` is forced to `workspace-write` scoped to it; the prompt gets a
   suffix noting it is an isolated copy whose changes don't affect the main dir or other agents.
@@ -393,14 +422,17 @@ clean-vs-dirty/preserve-on-changes semantics are identical.)
 
 ## 8. Concurrency, caps, budget
 
-- **Concurrency cap** (default 8, `--concurrency` / config): a semaphore gates how many `runAgent`
+- **Concurrency cap** (default 8, `--concurrency`): a semaphore gates how many `runAgent`
   calls execute at once; `parallel`/`pipeline` submit all thunks but only N run concurrently. The cap is
   global across providers. Codex agents multiplex over one app-server process (a **process pool** is the
   escape hatch if it saturates); Claude agents are one subprocess per `query()`, so under wide Claude
   fan-out the cap also bounds subprocess count — consider a session pool if startup overhead bites.
 - **Lifetime agent cap** (default 1000): a runaway-loop backstop; exceeding it throws.
 - **Fan-out cap** per `parallel`/`pipeline` call (default 4096): explicit error, not silent truncation.
-- **Budget** (token/cost ceiling) is **out of scope v1** (aggregate usage is reported; no hard stop).
+- **Budget** (output-token ceiling): set with `--budget N` and surfaced to the workflow as the injected
+  `budget = { total, spent(), remaining() }` global. The ceiling is hard — once `spent()` reaches `total`,
+  further `agent()` calls throw. With no `--budget` the ceiling is inert (`total` is `null`). *(This was
+  marked out-of-scope in an earlier draft; it shipped.)*
 
 ---
 
@@ -410,21 +442,25 @@ Every run is journaled, so any run can be resumed — after a crash, a Ctrl-C, o
 **edit**. This is the headline iteration feature: change a late stage of an expensive workflow, re-run,
 and only the changed suffix actually calls Codex.
 
-**Journal.** Each `agent()` result is appended to `~/.omegacode/runs/<runId>/journal.jsonl` as
-`{ key, index, promptHash, optsHash, status, result, usage, threadId, worktreeBranch?, durationMs }`,
-alongside run metadata (`workflowFile`, `fileHash`, `args`, `seed`, `codexVersion`, defaults). It is
-append-only and fsync'd per result, so a hard kill loses at most the single in-flight agent.
+**Journal.** Each `agent()` result is appended to `~/.omegacode/runs/<runId>/journal.jsonl` as one
+JSON line carrying its resume key, status, return value, usage, provider, worktree ref, and timing,
+alongside a run-metadata line (`workflowFile`, `fileHash`, `args`, `seed`, the key-scheme version). It
+is append-only, one line per result, so a hard kill loses at most the in-flight agents.
 
 **Keys + longest-unchanged-prefix replay.** Each call's key chains:
 `key_i = sha256(key_{i-1} ‖ prompt ‖ canonical(keyedOpts))`, where `keyedOpts` are the
-semantics-bearing fields (**`provider`**, `model`, `effort`, `schema`, `sandbox`, `cwd`, `instructions`)
-— **not** `label`/`phase`/`key`. So switching an agent's provider invalidates *that* call's cached
+semantics-bearing fields — **`provider`**, `model`, `effort`, `schema`, `sandbox`, `cwd`,
+`instructions`, and the other options that change what the agent does — **not** the cosmetic
+`label`/`phase`/`key`. So switching an agent's provider invalidates *that* call's cached
 result (and the suffix after it), which is correct — a Codex result and a Claude result aren't
 interchangeable. On `--resume`, the workflow file is re-run **live**; an `agent()` call whose key matches
 a *completed* journal entry returns its result instantly (no provider turn), and the first call that is
 new/edited/divergent — plus everything after it — runs live. Because keys chain, this is
-automatic: editing step 7 of a 10-step workflow replays 1–6 and runs 7–10. `agent(prompt, { key })`
-pins an explicit stable key for a call that should survive reordering or prompt-wording changes.
+automatic: editing step 7 of a 10-step workflow replays 1–6 and runs 7–10. Inside
+`parallel()`/`pipeline()` each branch chains off its structural position (thunk index / item × stage),
+never wall-clock completion order, so fan-out keys stay deterministic under concurrency.
+`agent(prompt, { key })` pins an explicit stable key for a call that should survive reordering or
+prompt-wording changes (duplicate explicit keys are rejected).
 
 **Determinism — enforced by the sandbox (as in Claude Code).** Replay is correct only if the script is
 deterministic between agent calls, so the hardened VM (§5) makes raw `Date.now()`/`Math.random()`/
@@ -445,20 +481,24 @@ orphaned provider session (Codex thread or Claude `query()`) is abandoned, not r
 matching Claude Code's started-hit-respawn rule.
 
 **CLI:** `--resume <runId>` resumes a specific run; `run` prints the `runId` + the exact resume command
-on completion/failure (as Claude Code does); `--resume-last` resumes the most recent run of the same
-file. Resuming a run whose file was edited is the intended path — the chained-key prefix replay is what
-makes "edit + re-run" cheap.
+on completion/failure (as Claude Code does). Resuming a run whose file was edited is the intended path —
+the chained-key prefix replay is what makes "edit + re-run" cheap. *(`--resume-last` — resume the most
+recent run of the same file — was in an earlier draft but is **not shipped**; pass the explicit `runId`
+printed at the end of the prior run.)*
 
 ---
 
 ## 10. Observability, the viewer server, and process model
 
 ### 10.1 Terminal output (default)
-- **Progress (stderr):** a live phase/agent tree — phases as groups, agents as rows ticking
-  `queued → running → done/failed`, with provider, model, elapsed, token counts, and the latest `log()`
-  narrator line. Plain/no-TTY mode prints line events. (Render with `ink` or a minimal ANSI tree.)
+- **Progress (stderr):** phases as groups, agents ticking `queued → running → done/failed`, with
+  provider, model, elapsed, token counts, and `log()` narrator lines. *(The shipped renderer prints a
+  readable **line stream** — the live in-place ANSI/`ink` tree from the original sketch is a
+  follow-up; the web viewer is the rich live view.)*
 - **Result (stdout):** the workflow's return value — text as-is, objects as pretty JSON; `--json`
-  wraps `{ result, usage, durationMs, agents: [...] }` for piping.
+  wraps `{ runId, status, url, result, error }` for piping (§12). *(The richer
+  `{ result, usage, durationMs, agents: [...] }` envelope from the original sketch is **not
+  shipped** — usage/per-agent detail lives in `events.jsonl` and the viewer, §10.2.)*
 
 ### 10.2 The viewer server (HTTP visualization)
 Every run already persists to `~/.omegacode/runs/<runId>/`, so the web UI is just a **reader of
@@ -478,9 +518,12 @@ on-disk state** — no new source of truth, no coupling to the run process. Two 
     events; the browser tree updates live (queued→running→done, tokens, elapsed).
 
 The server is **stateless and read-only** — it owns no execution, can be restarted any time, and simply
-projects the files (closer to `vite preview` than a job daemon). `run --open` auto-starts it (if the port
-isn't already bound) and opens the browser to that run's page; `run --ui` instead self-serves a
-single-run UI from the run process (ephemeral, dies with the run) when you don't want a central server.
+projects the files (closer to `vite preview` than a job daemon). **As shipped, `run` auto-starts the
+viewer by default** (reusing one if the port is already bound, spawning a detached idle-shutdown one
+otherwise) and prints the run's URL; `--open` additionally launches the browser, and `--no-serve` opts
+out. The viewer is a separate React/Vite app under `viewer/`, served as a built bundle (not the tiny
+inline SPA the original layout in §13 imagined). *(`run --ui` — a single-run UI self-served from the run
+process — is **not shipped**; the central viewer covers the same need.)*
 
 ### 10.2b Per-agent transcripts — the live chat-feed drilldown (two-stream model)
 The phase/agent tree is a *summary*; clicking an agent opens a **live chat feed** of that agent's actual
@@ -488,7 +531,7 @@ conversation. This is a deliberate two-stream split:
 
 - **`events.jsonl` (per run) = the summary stream** — phase/agent state transitions for the list + tree.
   Lean; one event per state change.
-- **`agents/<index>.jsonl` (per agent) = the conversation stream** — the agent's messages as they
+- **`agents/*.jsonl` (one file per agent) = the conversation stream** — the agent's messages as they
   happen, written from the worker's `onProgress`: `ChatChunk` = `meta` (the agent's prompt + provider/
   model) · `text` (assistant message chunks) · `reasoning` (thinking) · `tool` (`{id?, name, input}`) ·
   `tool-result` (`{id?, output, isError}`) · `status` (`running|done|failed`). Both `CodexWorker`
@@ -510,108 +553,143 @@ had to widen from summary signals (`tool`/`usage`) to full conversation chunks f
 IPC, "visualize running workflows" needs only (a) runs writing `events.jsonl` and (b) the read-only
 viewer above — never a central process that runs workflows.
 
-- **Foreground (default).** `run` executes in your terminal and exits when done; watch it live in the
-  browser via `serve`/`--open` while it runs.
-- **Detached/background.** `run --detach` double-forks a **detached run process** (stdio →
-  `runs/<runId>/run.log`) that executes independently and writes journal + events as usual; attach with
-  the viewer or `omegacode tail <runId>`. Still one process per run — just backgrounded, no central
-  executor.
-- **Control (cancel/pause) from the UI — optional, additive.** Observation needs no channel back to the
-  run. For *control*, a run can listen on `runs/<runId>/control.sock` (unix socket) or watch a
-  `control.json`; the viewer's `POST /api/runs/:id/cancel` forwards a request the run honors by aborting
-  (interrupt provider turns, then stop). v1 ships observation-only; control is a small follow-up.
+- **Foreground (shipped).** `run` executes in your terminal and exits when done; it auto-starts the
+  viewer and prints the run's URL so you can watch it live in the browser while it runs. To run in the
+  background, an agent launching a workflow backgrounds the `omegacode run …` process from its own shell
+  (see SKILL.md) — the run still writes journal + events as usual and stays visible in the viewer.
+- **`run --detach` / `omegacode tail <runId>` — not shipped.** The original design called for a
+  double-forked detached run process (stdio → `runs/<runId>/run.log`) plus a `tail` command to stream a
+  detached run's progress to the terminal. Neither exists; background a run from the calling shell and
+  watch it in the viewer instead.
+- **Control (cancel/pause) from the UI — not shipped.** The viewer is observation-only; there is no
+  `POST /api/runs/:id/cancel`, control socket, or `control.json`. The original additive-control sketch
+  (below) is a future direction, not a current capability.
 
 **When a real (executor) daemon would be warranted:** a persistent job queue, cross-run global resource
-governance, scheduled/triggered runs, or an always-on multi-user dashboard. All out of scope for v1 — and
-if ever built, that daemon would host the *same* `Worker` + runtime, and the viewer/UI wouldn't change
-(it already reads files). Noted as a future direction.
+governance, scheduled/triggered runs, or an always-on multi-user dashboard. All out of scope — and if
+ever built, that daemon would host the *same* `Worker` + runtime, and the viewer/UI wouldn't change (it
+already reads files). Noted as a future direction.
 
 ---
 
 ## 11. Configuration & auth
 
 - **Auth:** each worker inherits the host's existing provider auth — Codex login for `CodexWorker`,
-  `ANTHROPIC_API_KEY` / Claude Code login for `ClaudeWorker`. `omegacode doctor` checks **whichever
-  providers are enabled**: Codex via `model/list` succeeding, Claude via a trivial `query()` round-trip,
-  printing actionable errors otherwise. A workflow only needs auth for the provider(s) it actually uses.
-- **Config** (`omegacode.config.{ts,json}`, + env + flags, increasing precedence): default
-  `provider`, `model`, `effort`, `sandbox`, `approval`, `concurrency`, `cwd`, and per-provider settings
-  (`codexBin` app-server path; Claude `model`/`pathToClaudeCodeExecutable`).
+  `ANTHROPIC_API_KEY` / Claude Code login for `ClaudeWorker`. A workflow only needs auth for the
+  provider(s) it actually uses. *(As shipped, `omegacode doctor` is a lightweight binary check — it runs
+  `codex --version` / `claude --version` and reports the data dir; it does **not** do the live
+  `model/list` / `query()` round-trips the original design described.)*
+- **Config:** there is **no config file** (`omegacode.config.{ts,json}` was designed but **not
+  shipped**). Per-run defaults resolve in decreasing precedence: CLI flags
+  (`--provider`/`--model`/`--effort`/`--sandbox`/`--cwd`/`--concurrency`/`--budget`), then `meta`
+  (`defaultProvider`/`defaultModel`/`defaultSandbox`), then the built-in `DEFAULTS`
+  (`provider: codex`, `sandbox: read-only`, `approval: never`, `concurrency: 8`,
+  `maxAgents: 1000`, `maxFanout: 4096`). The codex app-server binary can be overridden via the `CODEX_BIN`
+  environment variable, and the data dir (default `~/.omegacode`) via `OMEGACODE_HOME`.
 
 ---
 
 ## 12. CLI surface
 
+This is the **actually shipped** command set (run `omegacode --help`); it is narrower than the original
+sketch. Several originally-designed commands/flags — `omegacode tail`, `omegacode list`, `--resume-last`,
+`--detach`, `--ui`, `--approve`, `--dry-run`, `--verbose`, `--arg k=v`, and a `validate`-time plan/static
+estimate — were **not shipped**. `validate` only parses the file and prints its `meta` (no plan), and
+`doctor` is a binary-presence check (no `--provider` flag).
+
 ```
-omegacode run <file.workflow.js> [--args <json> | --arg k=v ... | --args-file f.json]
-                                       [--provider codex|claude-code] [--cwd <dir>] [--model m] [--effort e]
-                                       [--concurrency N] [--approve interactive|auto]
-                                       [--json] [--verbose] [--dry-run]
-omegacode run <file> --resume <runId>   # re-run live; replay completed agents from the journal
-omegacode run <file> --resume-last      # resume the most recent run of this file
-omegacode run <file> [--detach] [--open | --ui]   # background the run / open the web UI
-omegacode serve [--port 4123]  # start the read-only viewer server (dashboard over all runs)
-omegacode tail <runId>         # stream a detached run's progress to the terminal
-omegacode runs [--file f]      # list runs (runId, file, status, #agents, when) for resume
-omegacode validate <file>      # compile the workflow, print its plan (static estimate)
-omegacode doctor [--provider]  # check enabled providers' binary/auth
-omegacode list [dir]           # list *.workflow.js in a directory (optional)
+omegacode run <file.workflow.js> [--args <json> | --args-file f.json]
+                                 [--provider codex|claude-code] [--model m] [--effort e]
+                                 [--sandbox read-only|workspace-write|danger-full-access] [--cwd <dir>]
+                                 [--concurrency N] [--budget N] [--resume <runId>]
+                                 [--fake] [--json] [--open] [--no-serve] [--port N]
+omegacode serve [--port 4123] [--host h] [--idle-shutdown]   # read-only viewer over all runs
+omegacode runs [--prune --keep N] [--prune-stale]            # list runs (or prune old / dead ones)
+omegacode validate <file.workflow.js>   # parse the file + print its meta (no plan / no run)
+omegacode doctor                        # check codex/claude binary presence + print the data dir
+omegacode guide                         # print the authoring guide (the body of skill/SKILL.md)
+omegacode install-skill [--claude] [--agents]   # install skill/SKILL.md into agent skill dirs
 ```
 
 `--provider` sets the **default** worker for the run; individual `agent()` calls override it via
-`opts.provider`. `--open` auto-starts the viewer (§10.2) and opens the run in a browser; `--detach`
-backgrounds the run (§10.3). On completion *or* failure, `run` prints the `runId` and the exact
-`--resume` command. `--dry-run` prints the inferred phase/agent structure (best-effort static analysis)
-without calling any provider.
+`opts.provider`. By default `run` auto-starts the viewer and prints the run's URL; `--open` also launches
+the browser, `--no-serve` opts out, and `--json` keeps stdout pure JSON (the URL moves to a `url` field).
+On completion *or* failure, `run` prints the `runId` and the exact `--resume` command. `--fake` swaps in
+the in-process fake worker (no real provider calls) for offline smoke tests. `guide` and `install-skill`
+both read the single source of truth `skill/SKILL.md`.
 
 ---
 
 ## 13. Repo layout
 
+The **actual** tree — principal modules; small extracted helpers come and go as the code evolves (the
+original sketch listed a `dsl/globals.ts` and an inline `server/web/` SPA that do not exist, and
+predated the separate `viewer/` React app and several runtime modules):
+
 ```
 omegacode/
-  package.json            # ESM, "bin": { "omegacode": "dist/cli.js" }
-                          # deps: @anthropic-ai/claude-agent-sdk, ajv (schema validate); build: tsup
+  package.json            # ESM, "bin": { "omegacode": "dist/cli.js" }, package "exports" → dist
+                          # deps: @anthropic-ai/claude-agent-sdk, ajv (schema validate)
+                          # build: viewer bundle then tsup (see "scripts")
+  tsup.config.ts
   tsconfig.json
   src/
-    cli.ts                # arg parsing, config, sandbox compile+run, output, signals
+    cli.ts                # arg parsing, sandbox compile+run, output, signals, viewer auto-start
+    index.ts              # library entrypoint (the embedding API surfaced via package "exports")
     dsl/
-      globals.ts          # the injected DSL globals (agent/parallel/pipeline/phase/log/now/random)
-      types.ts            # AgentOpts, AgentSpec, AgentResult, Meta, RunContext
+      types.ts            # ProviderId/Sandbox/Effort/AgentOpts/AgentSpec/AgentResult/Meta/RunDefaults…
       ambient.d.ts        # shipped ambient types for authors (globals + meta)
+                          # (the injected globals themselves live in runtime/primitives.ts + run.ts —
+                          #  there is no dsl/globals.ts)
     runtime/
       sandbox.ts          # node:vm compile + harden (codeGen off, freeze, shims) + meta parse
-      run.ts              # build RunContext, execute, caps, seeded now/random, approval gate, --detach
-      primitives.ts       # agent/parallel/pipeline/phase/log over Worker.runAgent + semaphore
-      journal.ts          # journal read/write (jsonl), resume lookup, seed persistence
-      events.ts           # events.jsonl writer (run/phase/agent/log) — feeds terminal UI + viewer
+      run.ts              # orchestrator: lint, journal + event sink, runtime, run the sandbox, heartbeat
+      primitives.ts       # Runtime: agent/parallel/pipeline/phase/log/now/random/budget over runAgent
+      semaphore.ts        # concurrency semaphore (gates runAgent; mutex(1) for worktree creation)
+      journal.ts          # journal read/write (jsonl), resume lookup, seed persistence, data dir
       keys.ts             # chained call-key hashing (incl. provider) + determinism lint
+      events.ts           # event types (run/phase/agent/log)
+      event-sink.ts       # events.jsonl writer + in-process listener fan-out (terminal UI + viewer)
+      transcript.ts       # per-agent conversation transcript writer (agents/*.jsonl)
+      jsonl-writer.ts     # shared append-only JSONL write-stream wrapper (transcript + event sink)
       progress.ts         # phase/agent progress model + terminal renderer (cached vs live agents)
       worktree.ts         # git worktree helper (create/lock/clean-vs-dirty teardown)
     server/
       serve.ts            # viewer HTTP server: /api/runs, SSE stream (fs.watch tail of events.jsonl)
-      web/                # tiny SPA dashboard (phase/agent tree, live via SSE) — static, no heavy build
+      tail.ts             # jsonl tail/offset helpers for the server (dependency-free, testable)
     worker/
-      index.ts            # Worker interface + registry/picker (provider → worker)
+      index.ts            # Worker interface + WorkerContext + AgentError/AgentInterrupted
+      factory.ts          # provider → worker resolution (fake / codex / claude); caches per provider
       schema.ts           # JSON Schema → per-provider output format; client-side validate
-      codex.ts            # CodexWorker: spawn app-server, JSON-RPC, thread/turn, outputSchema
-      codex-protocol.ts   # method + param/result types (hand-typed from v2; generate if it drifts)
-      claude.ts           # ClaudeWorker: query() loop, outputFormat, permissionMode mapping
-      errors.ts           # normalize codexErrorInfo / SDKResultError → AgentError + backoff
+      codex.ts            # CodexWorker: spawn app-server, JSON-RPC, thread/turn, two-turn structured output
+      codex-protocol.ts   # method + param/result types + sandbox/approval/effort mappers (hand-typed)
+      jsonrpc-stdio.ts    # JSON-RPC-over-stdio client (child process + framing + pending-request lifecycle)
+      claude.ts           # ClaudeWorker: query() loop, outputFormat, canUseTool sandbox gate
+      fake.ts             # in-process FakeWorker (--fake): synthesizes deterministic text/structured output
+      errors.ts           # normalize codexErrorInfo / SDKResultError → AgentError; retry classification
+  viewer/                 # the web viewer — a standalone React + Vite app (built into a static bundle
+                          #  by the build script, then served by src/server/serve.ts)
   examples/
-    deep-research.workflow.js
-    code-review.workflow.js
-  skill/SKILL.md          # authoring guide that ships with the tool
-  test/                   # runtime tests with a fake Worker; worker tests vs mock app-server / SDK
+    hello.workflow.js  deep-research.workflow.js  code-review.workflow.js
+    explore-codebase.workflow.js  parity-audit.workflow.js  omega-logos.workflow.js
+  skill/SKILL.md          # the canonical authoring guide that ships with the tool
+  test/                   # node:test suites (run via `npm test`)
 ```
 
-`worker/index.ts` is the seam: the runtime depends only on `Worker`, so a new provider is one file. The
-`codex-protocol.ts` types can be generated from the Codex `app-server-protocol` `v2` schema or
-hand-written for just the methods we use (start hand-written; generate if drift bites).
+`worker/index.ts` + `worker/factory.ts` are the seam: the runtime depends only on `Worker`, so a new
+provider is one file plus a factory branch. The `codex-protocol.ts` types are hand-written for just the
+methods we use.
 
 ---
 
 ## 14. Milestones
+
+> **Planning record.** These were the original milestone targets. The core engine (M0–M6: both real
+> workers, sandbox/runtime/journal, structured output, resume, worktrees, examples + skill) and the
+> viewer (M7) all landed, but several *exit-criteria* features named below were trimmed and **not
+> shipped** — `--resume-last`, `--detach`, `omegacode tail`, `--dry-run`, `--verbose`, a config file, and
+> the live-auth `doctor` round-trips (the shipped `doctor` is a binary-presence check). See §12 for the
+> commands and flags that actually exist.
 
 - **M0 — `Worker` interface + Codex driver spike.** Define `Worker`/`AgentSpec`/`AgentResult`;
   `CodexWorker` spawn + handshake + `runAgent` for a single text turn. *Exit:* a one-line `agent()`
@@ -654,8 +732,9 @@ hand-written for just the methods we use (start hand-written; generate if drift 
 ## 15. Risks / open questions
 
 1. **App-server protocol drift.** The app-server is evolving (experimental fields, v2 schema). Mitigate:
-   pin a known-good `codex` version, keep `protocol.ts` minimal, validate against it in `doctor`, and
-   treat unknown notifications as ignorable.
+   pin a known-good `codex` version, keep the hand-typed protocol module minimal, and treat unknown
+   notifications as ignorable. (The shipped `doctor` checks binary presence only — it does not validate
+   the protocol version.)
 2. **Structured-output fidelity (not availability).** Both providers support it natively (Codex
    `outputSchema`, Claude `outputFormat: json_schema` — confirmed in typings + docs), but strict-mode
    nuances differ (OpenAI strict requires `additionalProperties:false` + all-keys-required; Claude/Zod
@@ -668,32 +747,36 @@ hand-written for just the methods we use (start hand-written; generate if drift 
 3. **Headless auth.** Requires the host to be logged into Codex; CI/non-interactive needs a token path
    (`account/login/start` with `apiKey`) — document, but out of v1 scope.
 4. **Autonomous approvals safety.** Running agents `approvalPolicy:"never"` with `workspace-write` is
-   powerful; default research agents to `read-only`, require explicit opt-in (per-agent `sandbox`/
-   `worktree`) for writes, and offer `--approve interactive`.
+   powerful; default research agents to `read-only` and require explicit opt-in (per-agent `sandbox`/
+   `worktree`) for writes. (An interactive `--approve` mode is a future direction — not shipped.)
 5. **Parallel file mutation.** Without worktrees, concurrent `workspace-write` agents in one cwd race.
    The `worktree` helper is the answer; document that parallel editors must use it.
 6. **Throughput.** One app-server multiplexing many threads may bottleneck; the process pool (§8) is the
    escape hatch — measure before building it.
-7. **Long turns / cancellation.** Map SIGINT and per-turn watchdog to `turn/interrupt`; ensure threads
-   are archived so the app-server doesn't leak sessions.
-8. **Cost.** No budget ceiling in v1 — a wide fan-out can spend quickly; surface aggregate usage
-   prominently and add a `--max-agents`/budget guard if needed. Resume directly mitigates this: a failed
-   wide run is re-run for the price of only its unfinished agents.
+7. **Long turns / cancellation.** SIGINT maps to `turn/interrupt` (shipped). The per-turn stall
+   watchdog and `thread/archive` cleanup are future directions — **not shipped** (§6.1, §6.5);
+   today threads live as long as the per-run app-server process.
+8. **Cost.** A wide fan-out can spend quickly. *(An earlier draft said "no budget ceiling in v1" —
+   the guards since shipped: the `--budget` output-token ceiling (§8), the lifetime agent cap, and the
+   fan-out cap.)* Resume directly mitigates this too: a failed wide run is re-run for the price of only
+   its unfinished agents.
 9. **Viewer exposure.** `events.jsonl` and the dashboard surface prompts/results, which may be
-   sensitive. The viewer binds `127.0.0.1` only by default; a non-local bind requires `--host` + a token.
+   sensitive. The viewer binds `127.0.0.1` only by default; a non-local bind requires an explicit
+   `--host` opt-in (there is no auth/token layer — do not expose it beyond localhost).
    Bound `events.jsonl` growth like the terminal log (cap + rotate); the journal (resume) is separate and
    unaffected. `fs.watch` tailing must tolerate partial last lines and missing dirs (a run that hasn't
    written yet shows "starting").
-10. **No executor daemon.** A detached run still dies if its own process is killed (it's not supervised);
-   `--detach` is OS backgrounding, not a job manager. If supervised/restartable background runs become a
-   real need, that's the (out-of-scope) executor-daemon direction in §10.3, not a patch to `--detach`.
+10. **No executor daemon.** A run dies if its own process is killed (it's not supervised). Backgrounding
+   a run (from the calling shell — there is no built-in `--detach`, §10.3) is OS backgrounding, not a job
+   manager. If supervised/restartable background runs become a real need, that's the (out-of-scope)
+   executor-daemon direction in §10.3.
 11. **Resume determinism.** Replay only short-circuits calls whose chained key matches. Nondeterminism
    (raw `Date.now`/`Math.random`, or set/map iteration order feeding a prompt) shortens the replayed
-   prefix — never corrupts it. Mitigate with the seeded `ctx.now()`/`ctx.random()` helpers + the
-   startup lint; document that side-effecting agents (writes) are resumed via their preserved worktree
-   branch (§7, §9), not by re-applying changes. The one true footgun — a journaled result that is no
-   longer valid because the *world* changed (files moved, a dependency updated) — is the author's call;
-   `--no-resume` / a fresh `runId` always forces a clean run.
+   prefix — never corrupts it. Mitigate with the seeded `now()`/`random()` globals + the startup lint;
+   document that side-effecting agents (writes) are resumed via their preserved worktree branch
+   (§7, §9), not by re-applying changes. The one true footgun — a journaled result that is no longer
+   valid because the *world* changed (files moved, a dependency updated) — is the author's call; resume
+   is opt-in (`--resume <runId>`), so running without it always forces a clean run.
 
 ---
 
@@ -701,7 +784,7 @@ hand-written for just the methods we use (start hand-written; generate if drift 
 
 - **This is Claude Code's working model, provider-agnostic.** Workflow files are agent-authored, so the
   threat model is Claude Code's: a hardened in-process `node:vm` (no `require`/`fs`/`import`/`eval`,
-  frozen intrinsics, determinism shims, injected DSL globals), **live-coroutine** execution (the script
+  frozen `Date`/`Math` determinism shims, injected DSL globals), **live-coroutine** execution (the script
   holds real `await`s — it is *not* re-run per step), a journal written as it goes, and resume =
   re-run-from-top with journaled calls short-circuited. We deliberately match it rather than reinvent; the
   difference is that `agent()` drives a **Codex** *or* **Claude Code** turn behind one `Worker` interface

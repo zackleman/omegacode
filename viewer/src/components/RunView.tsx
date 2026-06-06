@@ -20,7 +20,7 @@ export function RunView() {
       </ResizablePanel>
       <ResizableHandle withHandle />
       <ResizablePanel defaultSize="50%" minSize="32%">
-        <AgentChat agent={agent} />
+        <AgentChat agent={agent} runStatus={snap?.status} />
       </ResizablePanel>
     </ResizablePanelGroup>
   )

@@ -2,8 +2,8 @@
 // state from the runs directory (events.jsonl / result.json) into JSON + an SSE stream,
 // and serves a tiny no-build SPA. node:http only; no extra deps.
 
-import { createReadStream, existsSync, statSync } from "node:fs"
-import { open, readFile, readdir, stat, watch } from "node:fs/promises"
+import { createReadStream, existsSync } from "node:fs"
+import { readFile, readdir, stat, watch } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { basename, dirname, extname, join, normalize, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,6 +13,7 @@ import { dataRoot } from "../runtime/journal.js"
 import type { AgentState, WorkflowEvent } from "../runtime/events.js"
 import type { ChatChunk } from "../runtime/transcript.js"
 import type { ProviderId } from "../dsl/types.js"
+import { nearestExistingDir, parseLastEventId, readNewLines } from "./tail.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // Built viewer assets: dist/web when bundled (tsup copies viewer/dist there), or the live
@@ -113,8 +114,21 @@ interface RunSummary {
   endedAt?: number
 }
 
-/** Fold a run's events into a full snapshot: latest agent per index + phases + logs. */
-function foldSnapshot(runId: string, events: WorkflowEvent[]): RunSnapshot {
+/**
+ * Fold a run's events into a full snapshot with its RAW status (no deadman applied), so the
+ * result is cacheable. Latest agent per index + phases + logs. Pure (no fs).
+ */
+function foldSnapshotRaw(runId: string, events: WorkflowEvent[]): RunSnapshot {
+  return foldSnapshot(runId, events, undefined, true)
+}
+
+/**
+ * Fold a run's events into a full snapshot: latest agent per index + phases + logs.
+ * `lastBeat` is the run's most recent heartbeat mtime (ms); when omitted, staleness falls
+ * back to `startedAt`. Pass `raw=true` to skip the deadman entirely (for caching). Pure
+ * (no fs) so callers can supply an async-stat'd heartbeat value (M25).
+ */
+function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: number, raw = false): RunSnapshot {
   const agentByIndex = new Map<number, AgentSnapshot>()
   const phaseByIndex = new Map<number, PhaseSnapshot>()
   const logs: Array<{ t: number; message: string }> = []
@@ -193,24 +207,40 @@ function foldSnapshot(runId: string, events: WorkflowEvent[]): RunSnapshot {
 
   const name = workflowFile ? basename(workflowFile).replace(/\.workflow\.[cm]?[jt]s$/i, "").replace(/\.[cm]?[jt]s$/i, "") : undefined
 
-  // Deadman switch: a run still marked "started" whose heartbeat has gone stale is dead
-  // (its process was SIGKILLed / crashed / the terminal closed before a terminal event).
-  if (status === "started") {
-    let lastBeat = startedAt ?? 0
-    try {
-      lastBeat = Math.max(lastBeat, statSync(join(runsDir(), runId, ".heartbeat")).mtimeMs)
-    } catch {
-      // no heartbeat file — fall back to startedAt
-    }
-    if (lastBeat > 0 && Date.now() - lastBeat > STALE_MS) status = "stale"
-  }
+  // The deadman switch is skipped when `raw` (so the fold is cacheable); otherwise applied
+  // with the supplied live heartbeat. Callers that cache fold raw and re-derive staleness from
+  // the live heartbeat on every poll, so a run that goes stale after caching never sticks at
+  // "started" (M25).
+  const finalStatus = raw ? status : applyDeadman(status, startedAt, lastBeat)
 
-  return { runId, status, name, workflowFile, error, startedAt, endedAt, phases, agents, logs }
+  return { runId, status: finalStatus, name, workflowFile, error, startedAt, endedAt, phases, agents, logs }
 }
 
-/** Summarize a run for the list view. */
+/**
+ * Deadman switch: a run still marked "started" whose most recent heartbeat (or startedAt,
+ * if no beat is known) has gone stale is treated as dead — its process was SIGKILLed /
+ * crashed / the terminal closed before a terminal event. `lastBeat` undefined means "no
+ * heartbeat info supplied" and falls back to startedAt.
+ */
+function applyDeadman(status: RunStatus, startedAt: number | undefined, lastBeat: number | undefined): RunStatus {
+  if (status !== "started") return status
+  const beat = Math.max(startedAt ?? 0, lastBeat ?? 0)
+  if (beat > 0 && Date.now() - beat > STALE_MS) return "stale"
+  return status
+}
+
+/** Most recent heartbeat mtime (ms) for a run, or 0 if there is no heartbeat file (async — M25). */
+async function heartbeatMtime(runId: string): Promise<number> {
+  try {
+    return (await stat(join(runsDir(), runId, ".heartbeat"))).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+/** Summarize a run for the list view (raw status; caller applies the deadman). */
 function foldSummary(runId: string, events: WorkflowEvent[]): RunSummary {
-  const snap = foldSnapshot(runId, events)
+  const snap = foldSnapshotRaw(runId, events)
   return {
     runId,
     name: snap.name,
@@ -221,6 +251,18 @@ function foldSummary(runId: string, events: WorkflowEvent[]): RunSummary {
   }
 }
 
+// Summary cache keyed by (runId, size, mtime) of events.jsonl — a 4s poll over many runs
+// otherwise re-reads and JSON-parses every run's full events.jsonl every time (M25). The
+// cached summary stores the RAW (pre-deadman) status; staleness is re-derived from the live
+// heartbeat on every poll, so a run that goes stale after being cached is never stuck showing
+// "started".
+interface CachedSummary {
+  size: number
+  mtimeMs: number
+  summary: RunSummary
+}
+const summaryCache = new Map<string, CachedSummary>()
+
 /** List all runs (newest first), folding each run's events.jsonl into a summary. */
 async function listRuns(): Promise<RunSummary[]> {
   let entries: Array<{ name: string; isDirectory: () => boolean }>
@@ -229,25 +271,59 @@ async function listRuns(): Promise<RunSummary[]> {
   } catch {
     return []
   }
+  const seen = new Set<string>()
   const summaries: Array<{ summary: RunSummary; mtime: number }> = []
   for (const ent of entries) {
     if (!ent.isDirectory()) continue
     const runId = ent.name
-    const events = await readEvents(runId)
-    if (events.length === 0) {
-      // Surface dirs that exist but have no events yet (use mtime for ordering).
-      let mtime = 0
-      try {
-        mtime = (await stat(join(runsDir(), runId))).mtimeMs
-      } catch {
-        // ignore
-      }
-      summaries.push({ summary: { runId, status: "unknown", agents: 0 }, mtime })
-      continue
+    seen.add(runId)
+
+    // Stat events.jsonl once; the (size, mtime) pair is the cache key.
+    let eventsStat: { size: number; mtimeMs: number } | undefined
+    try {
+      eventsStat = await stat(join(runsDir(), runId, "events.jsonl"))
+    } catch {
+      eventsStat = undefined
     }
-    const summary = foldSummary(runId, events)
+
+    let rawSummary: RunSummary | undefined
+    if (eventsStat) {
+      const cached = summaryCache.get(runId)
+      if (cached && cached.size === eventsStat.size && cached.mtimeMs === eventsStat.mtimeMs) {
+        rawSummary = cached.summary // file unchanged — reuse the cached raw fold
+      }
+    }
+
+    if (!rawSummary) {
+      const events = await readEvents(runId)
+      if (events.length === 0) {
+        // Surface dirs that exist but have no events yet (use dir mtime for ordering).
+        let mtime = 0
+        try {
+          mtime = (await stat(join(runsDir(), runId))).mtimeMs
+        } catch {
+          // ignore
+        }
+        summaries.push({ summary: { runId, status: "unknown", agents: 0 }, mtime })
+        continue
+      }
+      rawSummary = foldSummary(runId, events) // raw (pre-deadman) status
+      if (eventsStat) summaryCache.set(runId, { size: eventsStat.size, mtimeMs: eventsStat.mtimeMs, summary: rawSummary })
+    }
+
+    // Always re-derive the deadman from the LIVE heartbeat so a cached "started" run that has
+    // since gone stale never sticks (M25).
+    let summary = rawSummary
+    if (rawSummary.status === "started") {
+      const status = applyDeadman("started", rawSummary.startedAt, await heartbeatMtime(runId))
+      if (status !== "started") summary = { ...rawSummary, status }
+    }
     summaries.push({ summary, mtime: summary.startedAt ?? 0 })
   }
+
+  // Drop cache entries for runs that disappeared (e.g. pruned) so the map can't grow forever.
+  for (const key of summaryCache.keys()) if (!seen.has(key)) summaryCache.delete(key)
+
   summaries.sort((a, b) => {
     const ta = a.summary.startedAt ?? a.mtime
     const tb = b.summary.startedAt ?? b.mtime
@@ -315,6 +391,19 @@ function isValidRunId(id: string): boolean {
   return id.length > 0 && !id.includes("/") && !id.includes("\\") && !id.includes("..") && !id.includes("\0")
 }
 
+/**
+ * Decode a percent-encoded path segment, returning null on malformed input (a lone `%`,
+ * `%zz`, etc.) instead of letting decodeURIComponent throw a URIError → 500 (L20). Callers
+ * treat null as a 400 bad-request.
+ */
+function safeDecode(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // SSE stream: send current JSONL lines, then tail the file via fs.watch.
 //
@@ -328,86 +417,11 @@ function isValidRunId(id: string): boolean {
 // ---------------------------------------------------------------------------
 
 async function tailJsonl(req: IncomingMessage, res: HttpServerResponse, filePath: string): Promise<void> {
-  res.writeHead(200, {
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive",
-    "x-accel-buffering": "no",
-  })
-  res.write(": connected\n\n")
-  sseClients += 1
-
-  // Track byte offset consumed so we only emit newly-appended whole lines.
-  let offset = 0
-  let pending = "" // carry over a partial last line between reads
+  // Register lifecycle teardown BEFORE any awaited replay work (H15). If the client
+  // disconnects mid-replay (e.g. a large file), `close` must already have a listener or
+  // the connection leaks: sseClients stays inflated (idle shutdown never fires), the
+  // heartbeat keeps writing to a destroyed response, and the watcher is never aborted.
   let closed = false
-
-  const sendEvent = (ev: unknown): void => {
-    if (closed) return
-    res.write(`data: ${JSON.stringify(ev)}\n\n`)
-  }
-
-  // Read from `offset` to EOF, emit complete lines, retain a trailing partial.
-  let reading = false
-  let rereadRequested = false
-  const drain = async (): Promise<void> => {
-    if (closed) return
-    if (reading) {
-      rereadRequested = true
-      return
-    }
-    reading = true
-    try {
-      let fh
-      try {
-        fh = await open(filePath, "r")
-      } catch {
-        // File not created yet — nothing to read.
-        return
-      }
-      try {
-        const { size } = await fh.stat()
-        if (size < offset) {
-          // File shrank/rotated; restart from the top.
-          offset = 0
-          pending = ""
-        }
-        if (size > offset) {
-          const length = size - offset
-          const buf = Buffer.alloc(length)
-          const { bytesRead } = await fh.read(buf, 0, length, offset)
-          offset += bytesRead
-          pending += buf.subarray(0, bytesRead).toString("utf8")
-          let nl = pending.indexOf("\n")
-          while (nl !== -1) {
-            const line = pending.slice(0, nl).trim()
-            pending = pending.slice(nl + 1)
-            if (line) {
-              try {
-                sendEvent(JSON.parse(line))
-              } catch {
-                // skip malformed line
-              }
-            }
-            nl = pending.indexOf("\n")
-          }
-        }
-      } finally {
-        await fh.close()
-      }
-    } finally {
-      reading = false
-      if (rereadRequested && !closed) {
-        rereadRequested = false
-        void drain()
-      }
-    }
-  }
-
-  // Initial flush of existing content.
-  await drain()
-
-  // Watch the file's directory so we catch the file being created later, plus appends.
   const ac = new AbortController()
   let heartbeat: ReturnType<typeof setInterval> | undefined
   const cleanup = (): void => {
@@ -418,30 +432,138 @@ async function tailJsonl(req: IncomingMessage, res: HttpServerResponse, filePath
     if (heartbeat) clearInterval(heartbeat)
     res.end()
   }
-
   req.on("close", cleanup)
   req.on("error", cleanup)
+  // ServerResponse 'close' is the spec-guaranteed signal for "connection terminated before
+  // the response completed" — for an SSE response that never completes, it fires exactly on
+  // disconnect, on every Node version. cleanup is idempotent, so listening on both is safe.
+  res.on("close", cleanup)
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  })
+  res.write(": connected\n\n")
+  sseClients += 1
+
+  // Resume support (H17): Last-Event-ID carries the byte offset the client already has.
+  // Each `id:` frame we emit is the byte offset *after* that line, so on reconnect the
+  // client tells us where it left off and we replay only what's new — no duplicate
+  // transcripts/logs. A shrink/rotation resets `id:` back to 0 and the client (which
+  // resets its buffers on `onopen`) re-syncs from the top.
+  let offset = parseLastEventId(req.headers["last-event-id"])
+  let pending: Buffer = Buffer.alloc(0)
+
+  const sendEvent = (ev: unknown, id: number): void => {
+    if (closed) return
+    res.write(`id: ${id}\ndata: ${JSON.stringify(ev)}\n\n`)
+  }
+
+  // Read from `offset` to EOF in bounded chunks, emit complete lines, retain a partial.
+  let reading = false
+  let rereadRequested = false
+  const drain = async (): Promise<void> => {
+    if (closed) return
+    if (reading) {
+      rereadRequested = true
+      return
+    }
+    reading = true
+    try {
+      const result = await readNewLines(filePath, offset, pending)
+      offset = result.offset
+      pending = result.pending
+      // After a shrink/rotation we restarted from byte 0; the client resets on `onopen`,
+      // so re-emitting from the top with offsets starting at 0 is dedup-correct.
+      for (const { line, offset: id } of result.lines) {
+        try {
+          sendEvent(JSON.parse(line), id)
+        } catch {
+          // skip malformed line
+        }
+      }
+    } finally {
+      reading = false
+      if (rereadRequested && !closed) {
+        rereadRequested = false
+        drain().catch(() => {
+          // best-effort re-read; the watcher loop will drain again on the next change
+        })
+      }
+    }
+  }
+
+  // Initial flush of existing content.
+  await drain()
+  if (closed) return // client may have disconnected during the initial drain
 
   // Keep the connection alive through proxies / idle periods.
   heartbeat = setInterval(() => {
     if (!closed) res.write(": ping\n\n")
   }, 20_000)
 
-  const watchDir = dirname(filePath)
+  // Watch the file's directory so we catch the file being created later, plus appends.
+  // The directory may not exist yet (the runtime emits the "running" agent event before
+  // creating runs/<id>/agents/), so poll for the directory to appear before watching it
+  // (M23) — otherwise the stream pings forever and never delivers.
+  const targetDir = dirname(filePath)
   const targetName = basename(filePath)
   void (async () => {
-    try {
-      const watcher = watch(watchDir, { signal: ac.signal })
-      for await (const change of watcher) {
-        if (closed) break
-        if (!change.filename || change.filename === targetName) {
-          await drain()
-        }
-      }
-    } catch {
-      // AbortError on cleanup or watch failure — nothing to do.
+    // Phase 1: wait for the target directory to exist. fs.watch can't watch a missing dir
+    // (M23) and subdirectory-creation events aren't reliably reported across platforms, so
+    // poll until the directory appears (the run dir / agents dir is created shortly after
+    // the agent's "running" event). Cheap: a stat every DIR_POLL_MS.
+    while (!closed && !(await dirNowExists(targetDir))) {
+      if (await sleepUnlessClosed(DIR_POLL_MS, () => closed)) return
     }
-  })()
+    if (closed) return
+    // The dir may have been populated between the poll and now — drain before watching.
+    await drain()
+
+    // Phase 2: watch the (now-existing) target directory for appends. If the directory is
+    // ever removed, fall back to re-running phase 1 from the top.
+    while (!closed) {
+      try {
+        const watcher = watch(targetDir, { signal: ac.signal })
+        // Drain once more: the file may have been (re)written between the last drain and
+        // this watch being armed, in which case no change event would ever fire for it.
+        await drain()
+        if (closed) return
+        for await (const change of watcher) {
+          if (closed) return
+          if (!change.filename || change.filename === targetName) await drain()
+        }
+      } catch {
+        if (closed) return
+        // The watched dir vanished (rotation/cleanup) — re-resolve from phase 1.
+        while (!closed && !(await dirNowExists(targetDir))) {
+          if (await sleepUnlessClosed(DIR_POLL_MS, () => closed)) return
+        }
+        if (closed) return
+        await drain()
+      }
+    }
+  })().catch(() => {
+    // The tail loop is best-effort: an unexpected fs error must not become an
+    // unhandledRejection that kills the server. cleanup() owns teardown.
+  })
+}
+
+/** Poll interval while waiting for a not-yet-created directory to appear. */
+const DIR_POLL_MS = 250
+
+async function dirNowExists(dir: string): Promise<boolean> {
+  return (await nearestExistingDir(dir)) === dir
+}
+
+/** Resolve after `ms` unless `isClosed()` flips true first; returns true if closed. */
+function sleepUnlessClosed(ms: number, isClosed: () => boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(isClosed()), ms)
+    timer.unref?.()
+  })
 }
 
 /** SSE: replay + tail a run's events.jsonl. */
@@ -510,8 +632,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   // API: one agent's transcript stream (replay + live tail).
   const agentStreamMatch = /^\/api\/runs\/([^/]+)\/agents\/(\d+)\/stream$/.exec(path)
   if (agentStreamMatch) {
-    const runId = decodeURIComponent(agentStreamMatch[1] ?? "")
-    if (!isValidRunId(runId)) {
+    const runId = safeDecode(agentStreamMatch[1] ?? "")
+    if (runId === null || !isValidRunId(runId)) {
       sendText(res, 400, "bad run id")
       return
     }
@@ -522,8 +644,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   // API: one agent's transcript snapshot.
   const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/(\d+)$/.exec(path)
   if (agentMatch) {
-    const runId = decodeURIComponent(agentMatch[1] ?? "")
-    if (!isValidRunId(runId)) {
+    const runId = safeDecode(agentMatch[1] ?? "")
+    if (runId === null || !isValidRunId(runId)) {
       sendText(res, 400, "bad run id")
       return
     }
@@ -540,8 +662,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   // API: single run snapshot or stream.
   const streamMatch = /^\/api\/runs\/([^/]+)\/stream$/.exec(path)
   if (streamMatch) {
-    const runId = decodeURIComponent(streamMatch[1] ?? "")
-    if (!isValidRunId(runId)) {
+    const runId = safeDecode(streamMatch[1] ?? "")
+    if (runId === null || !isValidRunId(runId)) {
       sendText(res, 400, "bad run id")
       return
     }
@@ -551,8 +673,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path)
   if (runMatch) {
-    const runId = decodeURIComponent(runMatch[1] ?? "")
-    if (!isValidRunId(runId)) {
+    const runId = safeDecode(runMatch[1] ?? "")
+    if (runId === null || !isValidRunId(runId)) {
       sendText(res, 400, "bad run id")
       return
     }
@@ -566,7 +688,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         return
       }
     }
-    sendJson(res, 200, foldSnapshot(runId, events))
+    sendJson(res, 200, foldSnapshot(runId, events, await heartbeatMtime(runId)))
     return
   }
 
@@ -583,13 +705,28 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 // Public entry point
 // ---------------------------------------------------------------------------
 
+export interface ViewerHandle {
+  url: string
+  close: () => Promise<void>
+}
+
 export function startViewer(opts: {
   port?: number
   host?: string
-  /** Self-terminate when no SSE client is connected and no run is active (for an auto-started viewer). */
+  /** Watch for idle (no SSE client, no "started" run) and fire `onIdle` after `idleMs`. */
   idleShutdown?: boolean
   idleMs?: number
-}): Promise<{ url: string; close: () => Promise<void> }> {
+  /** How often to evaluate idleness (ms). Defaults to 15s; lowered in tests. */
+  idleCheckMs?: number
+  /**
+   * Called once when the viewer has been idle for `idleMs`. The library never calls
+   * `process.exit` itself (L21): supply this to decide what to do (the CLI passes a
+   * handler that closes the server and exits the auto-started viewer process). When
+   * omitted while `idleShutdown` is true, the viewer self-closes its HTTP server but does
+   * not exit the host process.
+   */
+  onIdle?: (handle: ViewerHandle) => void
+}): Promise<ViewerHandle> {
   const host = opts.host ?? "127.0.0.1"
   const port = opts.port ?? 0
 
@@ -601,6 +738,8 @@ export function startViewer(opts: {
     })
   })
 
+  let idleTimer: ReturnType<typeof setInterval> | undefined
+
   return new Promise((resolve, reject) => {
     server.once("error", reject)
     server.listen(port, host, () => {
@@ -610,11 +749,21 @@ export function startViewer(opts: {
       const displayHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host
       const url = `http://${displayHost.includes(":") ? `[${displayHost}]` : displayHost}:${actualPort}/`
 
+      const close = (): Promise<void> =>
+        new Promise<void>((res, rej) => {
+          if (idleTimer) clearInterval(idleTimer)
+          server.close((err) => (err ? rej(err) : res()))
+          // Closing the server stops accepting new conns; in-flight SSE clients
+          // are cleaned up when their sockets close.
+        })
+
+      const viewerHandle: ViewerHandle = { url, close }
+
       if (opts.idleShutdown) {
-        // Exit once there's been no SSE client and no run in the "started" state for idleMs.
+        // Fire onIdle once there's been no SSE client and no "started" run for idleMs.
         const idleMs = opts.idleMs ?? 60_000
         let lastActive = Date.now()
-        const timer = setInterval(() => {
+        idleTimer = setInterval(() => {
           void (async () => {
             let active = sseClients > 0
             if (!active) {
@@ -629,24 +778,17 @@ export function startViewer(opts: {
               return
             }
             if (Date.now() - lastActive >= idleMs) {
-              clearInterval(timer)
-              server.close(() => process.exit(0))
-              setTimeout(() => process.exit(0), 2000).unref() // force-exit if sockets linger
+              if (idleTimer) clearInterval(idleTimer)
+              idleTimer = undefined
+              if (opts.onIdle) opts.onIdle(viewerHandle)
+              else void close()
             }
           })()
-        }, 15_000)
-        timer.unref() // don't keep the process alive on the timer alone
+        }, opts.idleCheckMs ?? 15_000)
+        idleTimer.unref() // don't keep the process alive on the timer alone
       }
 
-      resolve({
-        url,
-        close: () =>
-          new Promise<void>((res, rej) => {
-            server.close((err) => (err ? rej(err) : res()))
-            // Closing the server stops accepting new conns; in-flight SSE clients
-            // are cleaned up when their sockets close.
-          }),
-      })
+      resolve(viewerHandle)
     })
   })
 }

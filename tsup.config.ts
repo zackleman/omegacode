@@ -8,9 +8,8 @@ export default defineConfig({
   outDir: "dist",
   clean: true,
   sourcemap: true,
-  dts: false,
+  // Type declarations for the public library entry only (the CLI is a binary, not an import target).
+  // This produces dist/index.d.ts, which the "." export's "types" condition points at.
+  dts: { entry: "src/index.ts" },
   splitting: false,
-  // serve.ts resolves its web assets at join(__dirname, "web"); __dirname is dist/ once bundled,
-  // so copy the built React viewer (viewer/dist) into dist/web after each build.
-  onSuccess: "rm -rf dist/web && cp -r viewer/dist dist/web",
 })
