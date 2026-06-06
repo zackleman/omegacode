@@ -4,6 +4,8 @@
 // notifications → resolve on turn/completed.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { copyFile, writeFile } from "node:fs/promises"
+import { join } from "node:path"
 
 import type { AgentResult, AgentSpec, AgentUsage } from "../dsl/types.js"
 import { emptyUsage } from "../dsl/types.js"
@@ -71,6 +73,7 @@ interface TurnState {
   settled: boolean
   ctx: WorkerContext
   sandbox: AgentSpec["sandbox"]
+  cwd: string
   /** Whether to forward this turn's messages to the live transcript. The silent
    *  schema-extraction turn (two-phase structured output) sets this false. */
   forwardProgress: boolean
@@ -129,12 +132,13 @@ export class CodexWorker implements Worker {
       ...(toCodexEffort(spec.effort) ? { effort: toCodexEffort(spec.effort) } : {}),
     }
 
-    const working = await this.runTurn(ctx, spec.sandbox, { ...baseTurn, input: textInput(spec.prompt) }, true)
+    const working = await this.runTurn(ctx, spec.sandbox, spec.cwd, { ...baseTurn, input: textInput(spec.prompt) }, true)
     if (!spec.schema) return working
 
     const extraction = await this.runTurn(
       ctx,
       spec.sandbox,
+      spec.cwd,
       { ...baseTurn, input: textInput(EXTRACTION_PROMPT), outputSchema: toCodexOutputSchema(spec.schema) },
       false,
     )
@@ -160,6 +164,7 @@ export class CodexWorker implements Worker {
   private runTurn(
     ctx: WorkerContext,
     sandbox: AgentSpec["sandbox"],
+    cwd: string,
     turnParams: TurnStartParams,
     forwardProgress: boolean,
   ): Promise<AgentResult> {
@@ -175,6 +180,7 @@ export class CodexWorker implements Worker {
         settled: false,
         ctx,
         sandbox,
+        cwd,
         forwardProgress,
       }
       this.turns.set(threadId, state)
@@ -397,6 +403,25 @@ export class CodexWorker implements Worker {
         const item = p.item as Record<string, unknown>
         if (item.type === "agentMessage" && typeof item.text === "string") {
           state.finalMessage = item.text
+          return
+        }
+        // Built-in hosted image_generation tool: the host saved a PNG (savedPath) under
+        // CODEX_HOME; copy it into the agent's cwd and surface it. (result is raw base64 PNG.)
+        if (item.type === "imageGeneration") {
+          const id = typeof item.id === "string" ? item.id : "image"
+          const savedPath = typeof item.savedPath === "string" ? item.savedPath : undefined
+          const b64 = typeof item.result === "string" ? item.result : undefined
+          const dest = join(state.cwd, `${id}.png`)
+          void (async () => {
+            try {
+              if (savedPath) await copyFile(savedPath, dest)
+              else if (b64) await writeFile(dest, Buffer.from(b64, "base64"))
+              else return
+              if (state.forwardProgress) state.ctx.onProgress({ kind: "tool-result", id, name: "image_generation", output: `saved image → ${dest}` })
+            } catch {
+              // best-effort; the agent may also place the file itself
+            }
+          })()
           return
         }
         const name = toolName(p.item)
