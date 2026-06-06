@@ -55,6 +55,8 @@ async function main(): Promise<void> {
       return cmdDoctor()
     case "install-skill":
       return cmdInstallSkill(flags)
+    case "guide":
+      return cmdGuide()
     case undefined:
     case "help":
     case "--help":
@@ -200,17 +202,31 @@ async function cmdDoctor(): Promise<void> {
   console.log(`  data dir     : ${dataRoot()}`)
 }
 
+/**
+ * The single source of truth for the skill + guide: skill/SKILL.md, resolved relative to
+ * the CLI — true both from source (src/cli.ts → repo/skill) and the build (dist/cli.js →
+ * package/skill). `install-skill` and `guide` both read it through here.
+ */
+function readSkill(): string {
+  const src = join(dirname(fileURLToPath(import.meta.url)), "..", "skill", "SKILL.md")
+  if (!existsSync(src)) throw new Error(`skill source not found at ${src}`)
+  return readFileSync(src, "utf8")
+}
+
+async function cmdGuide(): Promise<void> {
+  // Print the authoring guide (the skill body, minus the YAML frontmatter).
+  process.stdout.write(readSkill().replace(/^---\n[\s\S]*?\n---\n+/, ""))
+}
+
 async function cmdInstallSkill(flags: Flags): Promise<void> {
-  // The bundled skill lives at <cli dir>/../skill/SKILL.md — true both from source
-  // (src/cli.ts → repo/skill) and from the build (dist/cli.js → package/skill).
-  const here = dirname(fileURLToPath(import.meta.url))
-  const src = join(here, "..", "skill", "SKILL.md")
-  if (!existsSync(src)) {
-    console.error(`skill source not found at ${src}`)
+  let body: string
+  try {
+    body = readSkill()
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err))
     process.exitCode = 1
     return
   }
-  const body = readFileSync(src, "utf8")
   const wantClaude = flags.claude === true
   const wantAgents = flags.agents === true
   const both = !wantClaude && !wantAgents // default: install to both
@@ -248,10 +264,11 @@ Usage:
   agent-workflows runs [--prune --keep <N>]           List runs (or prune old ones)
   agent-workflows validate <file.workflow.js>         Parse + check meta without running
   agent-workflows doctor                              Check codex/claude availability + data dir
+  agent-workflows guide                               Print the full authoring guide (the skill text)
   agent-workflows install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs
 
-Runs persist to ~/.agent-workflows/runs/<id>/. Full authoring guide: the agent-workflows skill
-(\`agent-workflows install-skill\`) or skill/SKILL.md.`)
+Runs persist to ~/.agent-workflows/runs/<id>/. The guide, the install-skill skill, and skill/SKILL.md
+are the same single source of truth — run \`agent-workflows guide\` to read it.`)
 }
 
 main().catch((err) => {
