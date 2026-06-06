@@ -1,223 +1,185 @@
 ---
 name: agent-workflows
-description: Author and run multi-agent workflows with the `agent-workflows` CLI — JavaScript files that orchestrate Codex (gpt-5.x) and Claude Code agents via a small DSL (agent()/parallel()/pipeline()/phase()). Use when a task is big enough to decompose and run in parallel, when you want independent perspectives and adversarial checks before committing, or when the work is too large for one context (broad audits, migrations, multi-source research, exhaustive reviews). Covers the file shape, the DSL, mixing providers, structured output, sandbox/worktree, determinism, resume, the live viewer, and every CLI command.
+description: Author and run multi-agent workflows with the `agent-workflows` CLI — JavaScript files that orchestrate Codex (gpt-5.x) and Claude Code agents deterministically via agent()/parallel()/pipeline()/phase(). Use when a task is big enough to decompose and run in parallel, when you want independent perspectives and adversarial checks before committing, or when the work is too large for one context (broad audits, migrations, multi-source research, exhaustive reviews). Covers the file shape, the DSL, mixing providers, structured output, worktree isolation, determinism, resume, the live viewer, and every CLI command.
 metadata:
   type: reference
 ---
 
 # agent-workflows
 
-`agent-workflows` is a CLI that runs a **JavaScript workflow file** which orchestrates many **agents**
-deterministically. You write the file; the CLI executes it in a hardened sandbox, and each `agent()`
-call spawns a real agent turn — a **Codex** (gpt-5.x) or **Claude Code** agent, your choice per call.
-The file holds the control flow (loops, fan-out, fan-in, conditionals) that a single agent turn can't do
-reliably, and accumulates results in plain variables.
+Run a workflow file that orchestrates multiple agents deterministically. `agent-workflows run <file.workflow.js>` executes the file; it persists to `~/.agent-workflows/runs/<id>/` and prints a runId. Use `agent-workflows serve` (or `run --open`) to watch live progress. Each `agent()` call spawns a real **Codex** (gpt-5.x) or **Claude Code** agent — you pick the provider per call.
 
-This is the standalone-CLI analog of Claude Code's built-in Workflows. If you know that, you know this —
-the differences are: it runs `.js` files from the terminal (not a tool call), each `agent()` picks a
-**provider** (`codex` or `claude-code`), and runs persist to `~/.agent-workflows/runs/<id>/` with a live
-web viewer.
+A workflow structures work across many agents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context can't hold (migrations, audits, broad sweeps). The file is where you encode that structure: what fans out, what verifies, what synthesizes.
 
-```bash
-agent-workflows run myflow.workflow.js          # run a workflow file
-agent-workflows run myflow.workflow.js --open   # …and open the live viewer
-agent-workflows serve                           # the viewer (all runs), http://127.0.0.1:4123
-```
+When you write one, the right move is often **hybrid**: scout first (list the files, find the channels, scope the diff) to discover the work-list, then write a workflow to pipeline over it. You don't need to know the shape before the *task* — only before the *orchestration step*.
 
-## When to use a workflow
+Common single-phase workflows you can chain across runs:
+- **Understand** — parallel readers over relevant subsystems → structured map
+- **Design** — judge panel of N independent approaches → scored synthesis
+- **Review** — dimensions → find → adversarially verify (example below)
+- **Research** — multi-modal sweep → deep-read → synthesize
+- **Migrate** — discover sites → transform each (worktree isolation) → verify
 
-Reach for a workflow to be **comprehensive** (decompose and cover in parallel), to be **confident**
-(independent perspectives and adversarial checks before committing), or to take on **scale** one context
-can't hold (migrations, audits, broad sweeps). The file is where you encode that structure: what fans
-out, what verifies, what synthesizes. For a single-fact lookup, just answer directly — don't write a
-workflow.
+For larger work, run several in sequence — read each result before deciding the next phase. You stay in the loop; each workflow is one well-scoped fan-out.
 
-Common shapes (each is one fan-out you can chain across runs):
-- **Understand** — parallel readers over subsystems → structured map.
-- **Design** — a judge panel of N independent approaches → scored synthesis.
-- **Review** — dimensions → find → adversarially verify (the canonical example below).
-- **Research** — multi-modal sweep → deep-read → synthesize.
-- **Migrate** — discover sites → transform each (worktree isolation) → verify.
-
-## File shape
-
-Every workflow begins with `export const meta = {...}`, then the body:
-
+Every script must begin with `export const meta = {...}`:
 ```js
 export const meta = {
-  name: "review-changes",                       // required
-  description: "Review the diff across dimensions, verify each finding",  // required
-  phases: [{ title: "Review" }, { title: "Verify" }],  // optional, for the progress UI
+  name: 'find-flaky-tests',
+  description: 'Find flaky tests and propose fixes',   // one-line summary
+  phases: [                                            // one entry per phase() call
+    { title: 'Scan', detail: 'grep test logs for retries' },
+    { title: 'Fix', detail: 'one agent per flaky test' },
+  ],
 }
-// body starts here — top-level await is available
-phase("Review")
-const findings = await agent("List risky changes in the diff.", { schema: FINDINGS })
+// script body starts here — use agent()/parallel()/pipeline()/phase()/log()
+phase('Scan')
+const flaky = await agent('grep CI logs for retry markers', { schema: FLAKY_SCHEMA })
+// ...
 ```
 
-`meta` **must be a pure literal** — no variables, function calls, spreads, or template interpolation.
-Required: `name`, `description`. Optional: `phases` (array of `{title, detail?}`); use the same titles in
-`phase()` calls. Scripts are plain **JavaScript** (not TypeScript — no type annotations). Relative
-`import`/`require` and network are unavailable; the body runs in an async context (use `await` directly).
+The `meta` object must be a PURE LITERAL — no variables, function calls, spreads, or template interpolation. Required fields: `name`, `description`. Optional: `phases`. Use the SAME phase titles in meta.phases as in phase() calls — titles are matched exactly; a phase() call with no matching meta entry just gets its own progress group.
 
-## The DSL (injected globals)
+Script body hooks:
+- agent(prompt: string, opts?: {provider?: 'codex' | 'claude-code', model?: string, effort?: string, schema?: object, label?: string, sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access', cwd?: string, instructions?: string, maxTurns?: number, worktree?: boolean, key?: string}): Promise<any> — spawn an agent. Without schema, returns its final text as a string. With schema (a JSON Schema), the agent is forced to return JSON matching it and agent() returns the validated object — no parsing needed. Returns null if the user skips the agent mid-run (filter with .filter(Boolean)). opts.provider picks `codex` (gpt-5.x, the default) or `claude-code` — mix freely across a workflow. opts.label overrides the display label. opts.model overrides the model for this agent call. opts.sandbox defaults to `read-only`; use `workspace-write` (write to cwd + network) only when the agent must write. opts.worktree: true runs the agent in a fresh git worktree — EXPENSIVE (setup + disk per agent), use ONLY when agents mutate files in parallel and would otherwise conflict; the worktree is auto-removed if unchanged. opts.key is a stable resume pin that survives prompt-wording/reordering edits.
+- pipeline(items, stage1, stage2, ...): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Item A can be in stage 3 while item B is still in stage 1. This is the DEFAULT for multi-stage work. Wall-clock = slowest single-item chain, not sum-of-slowest-per-stage. Every stage callback receives (prevResult, originalItem, index) — use originalItem/index in later stages to label work without threading context through stage 1's return value. A stage that throws drops that item to `null` and skips its remaining stages.
+- parallel(thunks: Array<() => Promise<any>>): Promise<any[]> — run tasks concurrently. This is a BARRIER: awaits all thunks before returning. A thunk that throws (or whose agent errors) resolves to `null` in the result array — the call itself never rejects, so `.filter(Boolean)` before using the results. Use ONLY when you genuinely need all results together.
+- log(message: string): void — emit a progress message to the user (shown as a narrator line above the progress tree)
+- phase(title: string): void — start a new phase; subsequent agent() calls are grouped under this title in the progress display
+- args: any — the value passed via `--args '<json>'` / `--args-file <f>`, verbatim (undefined if not provided). Use this to parameterize a workflow — e.g. pass a research question, target path, or config object.
+- budget: {total: number|null, spent(): number, remaining(): number} — the run's output-token target, set with `--budget N`. `budget.total` is null if no target was set. `budget.spent()` returns output tokens spent this run. `budget.remaining()` returns `max(0, total - spent())`, or `Infinity` if no target. The target is a HARD ceiling, not advisory: once `spent()` reaches `total`, further `agent()` calls throw. Use for dynamic loops: `while (budget.total && budget.remaining() > 50_000) { ... }`, or static scaling: `const FLEET = budget.total ? Math.floor(budget.total / 100_000) : 5`.
+- now(): number / random(): number — journal-seeded deterministic time/RNG. Use these instead of `Date.now()`/`Math.random()` (which throw — see below).
 
-- **`agent(prompt: string, opts?): Promise<string | T>`** — spawn one agent. Without a `schema` it
-  resolves to the agent's final text; with a `schema` it returns a validated object `T`. Returns `null`
-  if the user skips it mid-run (filter with `.filter(Boolean)`).
-- **`parallel(thunks: Array<() => Promise<T>>): Promise<T[]>`** — run tasks concurrently. **This is a
-  BARRIER**: it awaits all thunks. A thunk that throws resolves to `null` in the result array (the call
-  itself never rejects) — `.filter(Boolean)` before using results.
-- **`pipeline(items, stage1, stage2, ...): Promise<any[]>`** — run each item through all stages
-  independently, **no barrier between stages**. Item A can be in stage 3 while item B is still in stage 1.
-  Each stage callback gets `(prevResult, originalItem, index)`. A stage that throws drops that item to
-  `null`. **This is the default for multi-stage work.**
-- **`phase(title)`** — start a phase; subsequent `agent()` calls group under it in the UI.
-- **`log(msg)`** — emit a progress line.
-- **`now()` / `random()`** — journal-seeded deterministic time/RNG. **Use these instead of `Date.now()`
-  / `new Date()` / `Math.random()`, which throw** (they'd break replay) and are rejected by the lint.
-- **`budget`** — `{ total: number|null, spent(): number, remaining(): number }`. `spent()` is output
-  tokens used this run. With `--budget N`, `agent()` throws once the ceiling is hit. Use for dynamic
-  loops: `while (budget.total && budget.remaining() > 50_000) { ... }`.
-- **`args`** — the value from `--args '<json>'` / `--args-file f` (undefined if not passed).
+Agents are told their final text IS the return value (not a human-facing message), so they return raw data. For structured output, use the schema option — validation happens at the worker layer and the agent retries once on a mismatch.
 
-### `agent()` options
-`{ provider, model, effort, sandbox, cwd, schema, instructions, maxTurns, worktree, label, key }`
-- **`provider`** — `"codex"` (default) or `"claude-code"`. **Mix providers freely across a workflow**
-  (e.g. Codex for breadth, Claude for synthesis).
-- **`model`** — e.g. `"gpt-5.5"` (codex) or a Claude model id.
-- **`effort`** — `"low" | "medium" | "high"` (codex reasoning effort).
-- **`sandbox`** — `"read-only"` (default), `"workspace-write"` (write to `cwd` + network), or
-  `"danger-full-access"`.
-- **`cwd`** — working directory for the agent (defaults to the run's cwd).
-- **`schema`** — a JSON Schema. The agent is forced to return validated JSON matching it (native
-  structured output per provider); `agent()` returns the parsed object. One corrective retry on a miss.
-- **`instructions`** — extra system instructions appended for that agent.
-- **`maxTurns`** — cap the agent's internal turns.
-- **`worktree`** — run the agent in a fresh git worktree (isolate parallel file edits; auto-removed if
-  unchanged). EXPENSIVE — only when agents mutate files concurrently.
-- **`label`** — display label in the UI/logs.
-- **`key`** — a stable resume pin (survives prompt-wording/reordering edits).
+Scripts are plain JavaScript, NOT TypeScript — type annotations (`: string[]`), interfaces, and generics fail to parse. The script body runs in an async context — use await directly. Standard JS built-ins (JSON, Math, Array, etc.) are available — EXCEPT `Date.now()`/`Math.random()`/argless `new Date()`, which throw (they would break resume) and are rejected by a submit-time lint; use the injected `now()`/`random()` instead, or pass timestamps in via `args`. No filesystem, network, or relative import/require in the workflow body (the agents do the I/O).
 
-## pipeline vs parallel — DEFAULT TO pipeline
+DEFAULT TO pipeline(). Only reach for a barrier (parallel between stages) when you genuinely need ALL prior-stage results together.
 
-`pipeline()` has no barrier between stages, so wall-clock = the slowest single-item chain, not
-sum-of-slowest-per-stage. A **barrier** (`parallel` between stages) is correct ONLY when stage N needs
-*all* of stage N-1 at once — dedup/merge across the full set, an early-exit on total count, or a prompt
-that references "the other findings." It is **not** justified by "I need to flatten/map/filter first"
-(do that inside a stage) or "it's cleaner." Smell test: if you wrote `const a = await parallel(...);
-const b = transform(a); const c = await parallel(b...)` and the middle transform has no cross-item
-dependency, rewrite as a pipeline with the transform inside a stage.
+A barrier is correct ONLY when stage N needs cross-item context from all of stage N-1:
+- Dedup/merge across the full result set before expensive downstream work
+- Early-exit if the total count is zero ("0 bugs found → skip verification entirely")
+- Stage N's prompt references "the other findings" for comparison
 
-**Canonical multi-stage pattern** — pipeline by default; each dimension verifies as soon as its review
-completes:
+A barrier is NOT justified by:
+- "I need to flatten/map/filter first" — do it inside a pipeline stage: pipeline(items, stageA, r => transform([r]).flat(), stageB)
+- "The stages are conceptually separate" — that's what pipeline() models. Separate stages ≠ synchronized stages.
+- "It's cleaner code" — barrier latency is real. If 5 finders run and the slowest takes 3× the fastest, a barrier wastes 2/3 of the fast finders' idle time.
+
+Smell test: if you wrote
 ```js
-export const meta = { name: "review", description: "Review dimensions, verify each finding",
-  phases: [{ title: "Review" }, { title: "Verify" }] }
-const DIMENSIONS = [{ key: "bugs", prompt: "..." }, { key: "perf", prompt: "..." }]
+const a = await parallel(...)
+const b = transform(a)        // flatten, map, filter — no cross-item dependency
+const c = await parallel(b.map(...))
+```
+that middle transform doesn't need the barrier. Rewrite as a pipeline with the transform inside a stage. When in doubt: pipeline.
+
+Concurrent agent() calls are capped at min(16, cpu cores - 2) per workflow (override with `--concurrency N`) — excess calls queue and run as slots free up. You can still pass 100 items to parallel()/pipeline() and they all complete; only ~10 run at any moment. Total agent count across a workflow's lifetime is capped at 1000 — a runaway-loop backstop set far above any real workflow. A single parallel()/pipeline() call accepts at most 4096 items; passing more is an explicit error, not a silent truncation.
+
+The canonical multi-stage pattern — pipeline by default, each dimension verifies as soon as its review completes:
+```js
+export const meta = {
+  name: 'review-changes',
+  description: 'Review changed files across dimensions, verify each finding',
+  phases: [{ title: 'Review' }, { title: 'Verify' }],
+}
+const DIMENSIONS = [{ key: 'bugs', prompt: '...' }, { key: 'perf', prompt: '...' }]
 const results = await pipeline(
   DIMENSIONS,
-  (d) => agent(d.prompt, { label: `review:${d.key}`, schema: FINDINGS }),
-  (review) =>
-    parallel(review.findings.map((f) => () =>
-      agent(`Adversarially verify, default to refuted if unsure: ${f.title}`, { schema: VERDICT, provider: "claude-code" })
-        .then((v) => ({ ...f, verdict: v })))),
+  d => agent(d.prompt, { label: `review:${d.key}`, phase: 'Review', schema: FINDINGS_SCHEMA }),
+  review => parallel(review.findings.map(f => () =>
+    agent(`Adversarially verify: ${f.title}`, { label: `verify:${f.file}`, phase: 'Verify', schema: VERDICT_SCHEMA })
+      .then(v => ({ ...f, verdict: v }))
+  ))
 )
-const confirmed = results.flat().filter(Boolean).filter((f) => f.verdict?.real)
+const confirmed = results.flat().filter(Boolean).filter(f => f.verdict?.isReal)
 return { confirmed }
+// Dimension 'bugs' findings verify while dimension 'perf' is still reviewing. No wasted wall-clock.
 ```
 
-**Barrier IS correct** when you must dedup across all findings before expensive verification:
+When a barrier IS correct — dedup across all findings before expensive verification:
 ```js
-const all = await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { schema: FINDINGS })))
-const deduped = dedupe(all.filter(Boolean).flatMap((r) => r.findings))   // needs ALL at once
-const verified = await parallel(deduped.map((f) => () => agent(verifyPrompt(f), { schema: VERDICT })))
+const all = await parallel(DIMENSIONS.map(d => () => agent(d.prompt, { schema: FINDINGS_SCHEMA })))
+const deduped = dedupeByFileAndLine(all.filter(Boolean).flatMap(r => r.findings))  // <-- genuinely needs ALL at once
+const verified = await parallel(deduped.map(f => () => agent(verifyPrompt(f), { schema: VERDICT_SCHEMA })))
 ```
 
-## Loops
-
+Loop-until-count pattern — accumulate to a target:
 ```js
-// loop-until-count — accumulate to a target
 const bugs = []
-while (bugs.length < 10) { const r = await agent("Find bugs.", { schema: BUGS }); bugs.push(...r.bugs); log(`${bugs.length}/10`) }
-
-// loop-until-budget — scale depth to --budget (guard on budget.total or it runs to the agent cap)
-while (budget.total && budget.remaining() > 50_000) { const r = await agent("Find bugs.", { schema: BUGS }); bugs.push(...r.bugs) }
-
-// loop-until-dry — keep finding until K rounds turn up nothing new (catches the tail a fixed count misses)
-const seen = new Set(); let dry = 0
-while (dry < 2) {
-  const found = (await parallel(FINDERS.map((f) => () => agent(f.prompt, { schema: BUGS })))).filter(Boolean).flatMap((r) => r.bugs)
-  const fresh = found.filter((b) => !seen.has(key(b)))
-  if (!fresh.length) { dry++; continue }
-  dry = 0; fresh.forEach((b) => seen.add(key(b)))
+while (bugs.length < 10) {
+  const result = await agent("Find bugs in this codebase.", { schema: BUGS_SCHEMA })
+  bugs.push(...result.bugs)
+  log(`${bugs.length}/10 found`)
 }
 ```
 
-## Quality patterns
+Loop-until-budget pattern — scale depth to `--budget`. Guard on budget.total: with no target set, remaining() is Infinity and the loop would run straight to the 1000-agent cap.
+```js
+const bugs = []
+while (budget.total && budget.remaining() > 50_000) {
+  const result = await agent("Find bugs in this codebase.", { schema: BUGS_SCHEMA })
+  bugs.push(...result.bugs)
+  log(`${bugs.length} found, ${Math.round(budget.remaining() / 1000)}k remaining`)
+}
+```
 
-Pick by task and compose freely; scale to the ask ("find any bugs" → a few finders, single-vote verify;
-"thoroughly audit" → larger pool, 3–5 vote adversarial pass, synthesis):
-- **Adversarial verify** — spawn N independent skeptics per finding, each prompted to REFUTE (default to
-  refuted if uncertain). Kill if a majority refute. Stops plausible-but-wrong findings.
-- **Perspective-diverse verify** — give each verifier a distinct lens (correctness, security, perf,
-  does-it-reproduce) rather than N identical refuters.
-- **Judge panel** — generate N independent attempts from different angles, score with parallel judges,
-  synthesize from the winner while grafting the best of the runners-up.
-- **Multi-modal sweep** — parallel agents each searching a different way (by container, by content, by
-  entity, by time); each blind to the others.
-- **Completeness critic** — a final agent that asks "what's missing?"; its answer is the next round.
-- **No silent caps** — if you bound coverage (top-N, sampling, no-retry), `log()` what was dropped.
+Composing patterns — exhaustive review (find → dedup vs seen → diverse-lens panel → loop-until-dry):
+```js
+const seen = new Set(), confirmed = []
+let dry = 0
+while (dry < 2) {                                              // loop-until-dry
+  const found = (await parallel(FINDERS.map(f => () =>          // barrier: collect all finders this round
+    agent(f.prompt, { phase: 'Find', schema: BUGS })))).filter(Boolean).flatMap(r => r.bugs)
+  const fresh = found.filter(b => !seen.has(key(b)))           // dedup vs ALL seen — plain code, not an agent
+  if (!fresh.length) { dry++; continue }
+  dry = 0; fresh.forEach(b => seen.add(key(b)))
+  const judged = await parallel(fresh.map(b => () =>           // every fresh bug judged concurrently...
+    parallel(['correctness', 'security', 'repro'].map(lens => () =>   // ...each by 3 distinct lenses
+      agent(`Judge "${b.desc}" via the ${lens} lens — real?`, { phase: 'Verify', schema: VERDICT })))
+      .then(vs => ({ b, real: vs.filter(Boolean).filter(v => v.real).length >= 2 }))))
+  confirmed.push(...judged.filter(v => v.real).map(v => v.b))
+}
+return confirmed
+// dedup vs `seen`, NOT `confirmed` — else judge-rejected findings reappear every round and it never converges.
+```
 
-## Determinism, caps, safety
+Quality patterns — common shapes; pick by task and compose freely:
+- Adversarial verify: spawn N independent skeptics per finding, each prompted to REFUTE. Kill if ≥majority refute. Prevents plausible-but-wrong findings from surviving.
+  ```js
+  const votes = await parallel(Array.from({ length: 3 }, () => () =>
+    agent(`Try to refute: ${claim}. Default to refuted=true if uncertain.`, { schema: VERDICT })))
+  const survives = votes.filter(Boolean).filter(v => !v.refuted).length >= 2
+  ```
+- Perspective-diverse verify: when a finding can fail in more than one way, give each verifier a distinct lens (correctness, security, perf, does-it-reproduce) instead of N identical refuters — diversity catches failure modes redundancy can't.
+- Judge panel: generate N independent attempts from different angles (e.g. MVP-first, risk-first, user-first), score with parallel judges, synthesize from the winner while grafting the best ideas from runners-up. Beats one-attempt-iterated when the solution space is wide.
+- Loop-until-dry: for unknown-size discovery (bugs, issues, edge cases), keep spawning finders until K consecutive rounds return nothing new. Simple counters (while count < N) miss the tail.
+- Multi-modal sweep: parallel agents each searching a different way (by-container, by-content, by-entity, by-time). Each is blind to what the others surface; useful when one search angle won't find everything.
+- Completeness critic: a final agent that asks "what's missing — modality not run, claim unverified, source unread?" What it finds becomes the next round of work.
+- No silent caps: if a workflow bounds coverage (top-N, no-retry, sampling), `log()` what was dropped — silent truncation reads as "covered everything" when it didn't.
 
-- **Deterministic**: use `now()`/`random()`; `Date.now()`/`new Date()`/`Math.random()` throw and are
-  rejected by a submit-time lint. `meta` must be a pure literal.
-- **Caps**: concurrent `agent()` calls are capped (default 8, `--concurrency N`, max ~`cores-2`); excess
-  queues. Lifetime cap 1000 agents (runaway backstop); ≤4096 items per `parallel`/`pipeline` call.
-- **Sandbox**: agents are `read-only` by default. Use `workspace-write` only when an agent must write,
-  and `worktree: true` when parallel agents edit files.
-- **Cross-boundary values**: return JSON-serializable data from `agent()`/stages.
+Scale to what the user asked for. "find any bugs" → a few finders, single-vote verify. "thoroughly audit this" or "be comprehensive" → larger finder pool, 3–5 vote adversarial pass, synthesis stage. When unsure, lean toward thoroughness for research/review/audit requests and toward brevity for quick checks.
+
+These patterns aren't exhaustive — compose novel harnesses when the task calls for it (tournament brackets, self-repair loops, staged escalation, whatever fits).
+
+Use a workflow for multi-step orchestration where control flow should be deterministic (loops, conditionals, fan-out) rather than model-driven.
 
 ## Resume
 
-Every run journals each completed `agent()` result keyed by a hash chain over the file + the call's
-prompt/options. Re-running with `--resume <runId>` replays the **longest unchanged prefix** instantly and
-re-runs only from the first edited/added call onward. Edit your workflow and resume to iterate without
-paying for already-completed agents. Pin a call with `key` to keep its cache across reorders/edits.
+Every run has a runId (printed on completion). To resume after a script edit or interruption, re-run with `--resume <runId>` — the longest unchanged prefix of agent() calls returns cached results instantly; the first edited/new call and everything after it runs live. Same file + same args → 100% cache hit. `Date.now()`/`Math.random()`/`new Date()` are unavailable in scripts (they would break this) — use `now()`/`random()`, or pass timestamps via `args`. Pin a call with `opts.key` to keep its cached result across reorders/edits.
 
 ## CLI commands
 
 ```
-agent-workflows run <file.workflow.js> [options]   Run a workflow
-  --args '<json>' | --args-file <f>   input exposed as the `args` global
-  --provider codex|claude-code        default provider for agents that don't set one
-  --model <m> --effort <e> --sandbox <s> --cwd <dir>
-  --concurrency <N>                   max concurrent agents (default 8)
-  --budget <N>                        output-token ceiling (enables budget.* enforcement)
-  --resume <runId>                    replay unchanged prefix, re-run the rest
-  --fake                              run with a fake worker (no real agents) — fast smoke test
-  --json                             print {runId, status, result, error} as JSON
-  --open                             open the live viewer to this run
-
-agent-workflows serve [--port 4123] [--host h]     Live read-only web viewer of all runs
-agent-workflows runs [--prune --keep N]            List runs (or prune old ones)
-agent-workflows validate <file.workflow.js>        Parse + check meta without running
-agent-workflows doctor                             Check codex/claude availability + data dir
-agent-workflows install-skill [--claude] [--agents]  Install this skill into agent skill dirs
+agent-workflows run <file.workflow.js> [--args '<json>' | --args-file <f>]
+                                       [--provider codex|claude-code] [--model m] [--effort e]
+                                       [--sandbox read-only|workspace-write|danger-full-access] [--cwd dir]
+                                       [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--open]
+agent-workflows serve [--port 4123] [--host h]      Live read-only web viewer of all runs
+agent-workflows runs [--prune --keep <N>]           List runs (or prune old ones)
+agent-workflows validate <file.workflow.js>         Parse + check meta without running
+agent-workflows doctor                              Check codex/claude availability + data dir
+agent-workflows install-skill [--claude] [--agents] Install this skill into agent skill dirs
 ```
 
-## The viewer
-
-`agent-workflows serve` (or `run --open`) starts a localhost web UI that reads `~/.agent-workflows/runs`:
-a run list, a live phase/agent tree, and a per-agent **chat-feed drilldown** (the agent's messages,
-reasoning, command/tool cards with output, and structured results). It streams live via SSE and never
-executes anything — it only projects on-disk run state.
-
-## Quick checklist
-
-1. `export const meta = { name, description, phases? }` (pure literal) first.
-2. Default to `pipeline()`; use `parallel()` (barrier) only when a stage needs all prior results at once.
-3. Give each `agent()` a `schema` when you need structured data; mix `provider` per call.
-4. Use `now()`/`random()`, never `Date.now()`/`Math.random()`.
-5. Verify findings adversarially before trusting them; `log()` anything you cap.
-6. `run --open` to watch; `--resume <runId>` to iterate cheaply.
+`--fake` runs with a fake worker (no real agents) for a fast smoke test; `--json` prints `{runId, status, result, error}`. The viewer (`serve` / `run --open`) reads `~/.agent-workflows/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
