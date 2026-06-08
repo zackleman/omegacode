@@ -21,6 +21,8 @@ import {
   FolderAddIcon,
   InformationCircleIcon,
   LinkSquare02Icon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
   PlusMinusSquare01Icon,
   Refresh01Icon,
   Tick02Icon,
@@ -43,6 +45,8 @@ const ICON_MAP = {
   FileText: File01Icon,
   FileX2: FileXIcon,
   Info: InformationCircleIcon,
+  PanelLeftClose: PanelLeftCloseIcon,
+  PanelLeftOpen: PanelLeftOpenIcon,
   RotateCcw: Refresh01Icon,
   Spinner: DashedLineCircleIcon,
   Terminal: ComputerTerminal01Icon,
@@ -61,7 +65,12 @@ export interface IconProps {
   "aria-label"?: string
 }
 
-export function Icon({ name, className, "aria-hidden": ariaHidden, "aria-label": ariaLabel }: IconProps) {
+export function Icon({
+  name,
+  className,
+  "aria-hidden": ariaHidden,
+  "aria-label": ariaLabel,
+}: IconProps) {
   return (
     <HugeiconsIcon
       icon={ICON_MAP[name]}
