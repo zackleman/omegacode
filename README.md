@@ -66,6 +66,7 @@ omegacode doctor                          # check codex/claude availability
 omegacode guide                           # print the full authoring guide
 ```
 
-`run` also accepts saved workflow names, including the built-ins `deep-research` and
-`code-review` — try `omegacode run deep-research --args '"your question"'`. See
-`omegacode guide` for the complete authoring reference.
+`run` also accepts saved workflow names, including the built-ins `deep-research`,
+`code-review`, and `multi-provider-review` (Codex and Claude review the same branch
+independently, then a synthesis merges both) — try `omegacode run deep-research --args
+'"your question"'`. See `omegacode guide` for the complete authoring reference.

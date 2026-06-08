@@ -218,9 +218,10 @@ omegacode install-skill [--claude] [--agents] Install this skill into agent skil
 
 `run` and `validate` accept a bare name instead of a path (anything with a path separator or `.js` suffix is treated as a file). A name is the workflow's **`meta.name`** — not its filename — and resolves across three tiers, highest precedence first: **project** (every `.omegacode/workflows/` from cwd up to the repo root; nearer shadows farther), **user** (`~/.omegacode/workflows/`), and the package **built-ins**. `omegacode save <file>` copies a validated workflow into the user tier (`--project` for the project tier; `--force` to overwrite); `omegacode workflows` lists everything visible.
 
-Two built-ins ship with the package, ports of Claude Code's bundled workflows:
+Three built-ins ship with the package. Two are ports of Claude Code's bundled workflows:
 - **`deep-research`** — `omegacode run deep-research --args '"<question>"'`: scope → 5 parallel web searches → fetch/dedup top sources → 3-vote adversarial verification per claim → cited report.
 - **`code-review`** — `omegacode run code-review [--args '{"target": "...", "level": "high|xhigh|max"}']`: one finder per review angle, an independent verifier per finding (CONFIRMED/PLAUSIBLE/REFUTED), a gap-sweep at xhigh/max, ranked report.
+- **`multi-provider-review`** — `omegacode run multi-provider-review [--args '{"target": "..."}']`: Codex and Claude each review the entire feature/branch independently (identical prompts, blind to each other), then a synthesis agent merges both — consensus findings ranked first, unique catches attributed, disagreements called out. Target defaults to the current branch vs its merge-base with the default branch.
 
 ## Running a workflow for a user (from an agent)
 

@@ -626,10 +626,13 @@ first: *project* (every `.omegacode/workflows/` from cwd up to the repo/home bou
 farther), *user* (`<dataRoot>/workflows/`), *builtin* (the package `builtins/` dir, shipped in the npm
 tarball). Only `.js` files ≤ 512 KiB with a valid `meta` load; invalid/oversize files are skipped.
 `save` validates via `parseWorkflow` and copies to `<tier>/<meta.name>.workflow.js` (no overwrite
-without `--force`). Two built-ins ship, ports of Claude Code's bundled workflows: `deep-research`
+without `--force`). Three built-ins ship. Two are ports of Claude Code's bundled workflows: `deep-research`
 (scope → 5 parallel web searches → fetch/dedup top 15 → 3-vote adversarial verify, 2/3 refutes kill →
 cited report) and `code-review` (per-angle finders → independent CONFIRMED/PLAUSIBLE/REFUTED verifier
-per finding → gap-sweep at xhigh/max → ranked, capped report; `LEVEL_PARAMS` scale by level).
+per finding → gap-sweep at xhigh/max → ranked, capped report; `LEVEL_PARAMS` scale by level). The third,
+`multi-provider-review`, is omegacode-original: Codex and Claude each review the entire feature/branch
+independently with identical prompts (blind to each other), then a synthesis agent merges both —
+consensus findings ranked first, unique catches attributed via `foundBy`, disagreements called out.
 
 ---
 
