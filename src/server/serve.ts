@@ -89,6 +89,8 @@ const STALE_MS = 20_000
 interface PhaseSnapshot {
   index: number
   title: string
+  /** Declared in meta.phases but not yet entered by phase() (no agents have run under it). */
+  pending?: boolean
   agents: AgentSnapshot[]
 }
 
@@ -153,9 +155,16 @@ function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: number,
         break
       }
       case "phase": {
+        // A pending event only ever CREATES a pending phase — it never downgrades one that
+        // already started (a resume appends a fresh pending announcement after the prior
+        // attempt's events). The non-pending re-emit on actual entry clears the flag.
         const existing = phaseByIndex.get(ev.index)
-        if (existing) existing.title = ev.title
-        else phaseByIndex.set(ev.index, { index: ev.index, title: ev.title, agents: [] })
+        if (existing) {
+          existing.title = ev.title
+          if (!ev.pending) existing.pending = false
+        } else {
+          phaseByIndex.set(ev.index, { index: ev.index, title: ev.title, pending: ev.pending === true, agents: [] })
+        }
         break
       }
       case "agent": {
@@ -203,7 +212,11 @@ function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: number,
     if (a.phaseIndex !== undefined) phaseByIndex.get(a.phaseIndex)?.agents.push(a)
   }
   const phases = [...phaseByIndex.values()].sort((p, q) => p.index - q.index)
-  for (const p of phases) p.agents.sort((a, b) => a.index - b.index)
+  for (const p of phases) {
+    p.agents.sort((a, b) => a.index - b.index)
+    // Belt-and-braces: a phase with agents under it has started, whatever its events said.
+    if (p.agents.length > 0) p.pending = false
+  }
 
   const name = workflowFile ? basename(workflowFile).replace(/\.workflow\.[cm]?[jt]s$/i, "").replace(/\.[cm]?[jt]s$/i, "") : undefined
 

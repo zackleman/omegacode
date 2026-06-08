@@ -8,7 +8,12 @@ export type AgentState = "queued" | "running" | "done" | "failed" | "skipped"
 
 export type WorkflowEvent =
   | { t: number; type: "run"; status: "started" | "completed" | "failed" | "interrupted"; runId: string; workflowFile?: string; error?: string }
-  | { t: number; type: "phase"; index: number; title: string }
+  /**
+   * `pending: true` marks a phase declared in meta.phases but not yet entered by phase().
+   * Declared phases are announced up front (so the viewer can show the full plan); the same
+   * index is re-emitted without `pending` when the workflow actually reaches the phase.
+   */
+  | { t: number; type: "phase"; index: number; title: string; pending?: boolean }
   | {
       t: number
       type: "agent"

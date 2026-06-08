@@ -94,6 +94,38 @@ describe("PhaseGroup collapse toggle (L28)", () => {
   })
 })
 
+describe("pending (declared) phases", () => {
+  it("renders a declared-but-unstarted phase dimmed with a 'pending' tag, no agent count", () => {
+    const snap = makeSnap([], { phases: [{ index: 0, title: "Phase A", pending: true, agents: [] }] })
+    renderDetail(snap)
+    expect(screen.getByText("Phase A")).toBeTruthy()
+    expect(screen.getByText("pending")).toBeTruthy()
+    expect(screen.queryByText("0/0")).toBeNull()
+    // The full plan is on screen — no "No agents yet." placeholder under it.
+    expect(screen.queryByText("No agents yet.")).toBeNull()
+  })
+
+  it("labels a pending phase 'not run' once the run is terminal", () => {
+    const snap = makeSnap([], { phases: [{ index: 0, title: "Phase A", pending: true, agents: [] }], status: "failed" })
+    renderDetail(snap)
+    expect(screen.getByText("not run")).toBeTruthy()
+    expect(screen.queryByText("pending")).toBeNull()
+  })
+
+  it("renders a started phase normally even when the snapshot still carries pending agents elsewhere", () => {
+    const agents = [makeAgent({ index: 0, state: "running" })]
+    const snap = makeSnap(agents, {
+      phases: [
+        { index: 0, title: "Phase A", agents },
+        { index: 1, title: "Phase B", pending: true, agents: [] },
+      ],
+    })
+    renderDetail(snap)
+    expect(screen.getByText("0/1")).toBeTruthy()
+    expect(screen.getByText("pending")).toBeTruthy()
+  })
+})
+
 describe("agent glyph overlay on dead runs (H19)", () => {
   it("shows the run's fate instead of a spinner for a running agent in a stale run", () => {
     const { container } = renderDetail(makeSnap([makeAgent({ index: 0, state: "running" })], { status: "stale" }))

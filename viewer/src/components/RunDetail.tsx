@@ -94,6 +94,8 @@ function PhaseGroup({
   activeIndex: number | null
   onPick: (i: number) => void
 }) {
+  // Declared in meta.phases but not entered yet — render the plan slot, dimmed, with no count.
+  const pending = phase.pending === true && phase.agents.length === 0
   const done = phase.agents.filter((a) => isTerminalAgent(a.state)).length
   const roll = rollup(phase.agents)
   const hasError = phase.agents.some((a) => a.state === "failed")
@@ -115,13 +117,21 @@ function PhaseGroup({
         )}
       >
         <span className={cn("text-[10px] text-muted-foreground transition-transform", !open && "-rotate-90")}>▾</span>
-        <span className="text-sm font-semibold">{phase.title}</span>
+        <span className={cn("text-sm font-semibold", pending && "text-muted-foreground")}>{phase.title}</span>
         <span className="ml-auto flex items-center gap-2 font-mono text-[11px] text-subtle-foreground">
-          <StatusGlyph state={agentGlyphState(roll, runStatus)} />
-          {done}/{phase.agents.length}
+          {pending ? (
+            // A spinner would lie on both ends: nothing is queued while the run is live, and a
+            // dead run will never reach this phase at all.
+            <span className="italic">{isTerminalRun(runStatus) ? "not run" : "pending"}</span>
+          ) : (
+            <>
+              <StatusGlyph state={agentGlyphState(roll, runStatus)} />
+              {done}/{phase.agents.length}
+            </>
+          )}
         </span>
       </button>
-      {open && (
+      {open && phase.agents.length > 0 && (
         <div className="flex flex-col gap-0.5 p-1.5">
           {phase.agents.map((a) => (
             <AgentRow key={a.index} agent={a} runStatus={runStatus} active={a.index === activeIndex} onClick={() => onPick(a.index)} />
@@ -182,7 +192,7 @@ export function RunDetail({ snap }: { snap: RunSnapshot | null }) {
             ))}
           </div>
         )}
-        {total === 0 && <div className="px-2 py-6 text-center text-sm text-muted-foreground">No agents yet.</div>}
+        {total === 0 && snap.phases.length === 0 && <div className="px-2 py-6 text-center text-sm text-muted-foreground">No agents yet.</div>}
       </div>
     </div>
   )

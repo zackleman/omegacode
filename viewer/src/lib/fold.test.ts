@@ -98,6 +98,39 @@ describe("foldEvents — basic folding", () => {
   })
 })
 
+describe("foldEvents — pending (declared) phases", () => {
+  it("creates a pending phase from a pending announcement", () => {
+    const snap = foldEvents(RUN, [ev({ type: "phase", t: 1, index: 1, title: "Scan", pending: true })])
+    expect(snap.phases).toHaveLength(1)
+    expect(snap.phases[0]!.pending).toBe(true)
+  })
+
+  it("clears pending when the phase is entered (non-pending re-emit of the same index)", () => {
+    const snap = foldEvents(RUN, [
+      ev({ type: "phase", t: 1, index: 1, title: "Scan", pending: true }),
+      ev({ type: "phase", t: 2, index: 1, title: "Scan" }),
+    ])
+    expect(snap.phases).toHaveLength(1)
+    expect(snap.phases[0]!.pending).toBe(false)
+  })
+
+  it("never downgrades a started phase on a later pending announcement (resume replay)", () => {
+    const snap = foldEvents(RUN, [
+      ev({ type: "phase", t: 1, index: 1, title: "Scan" }),
+      ev({ type: "phase", t: 2, index: 1, title: "Scan", pending: true }),
+    ])
+    expect(snap.phases[0]!.pending).toBe(false)
+  })
+
+  it("clears pending on a phase that has agents under it", () => {
+    const snap = foldEvents(RUN, [
+      ev({ type: "phase", t: 1, index: 1, title: "Scan", pending: true }),
+      ev({ type: "agent", t: 2, index: 0, label: "a", provider: "codex", state: "running", phaseIndex: 1 }),
+    ])
+    expect(snap.phases[0]!.pending).toBe(false)
+  })
+})
+
 describe("foldEvents — never invents staleness (H19)", () => {
   // Regression: an earlier H19 fix ran a deadman here keyed off the newest EVENT timestamp. But
   // heartbeats live in runs/<id>/.heartbeat — the event stream never carries them — so a healthy

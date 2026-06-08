@@ -154,6 +154,17 @@ test("run / phase / log events render", () => {
   assert.match(out, /completed/)
 })
 
+test("pending phase announcements don't print; the actual entry does", () => {
+  const out = capture((r) => {
+    r.handle({ t: 0, type: "phase", index: 1, title: "Plan", pending: true })
+    r.handle({ t: 0, type: "phase", index: 2, title: "Build", pending: true })
+    r.handle({ t: 0, type: "phase", index: 1, title: "Plan" })
+  })
+  // Build was only declared, never entered — no header. Plan prints exactly once, on entry.
+  assert.doesNotMatch(out, /Build/)
+  assert.equal(out.split("\n").filter((l) => l.includes("Plan")).length, 1)
+})
+
 test("fmtDur formats sub-second, seconds, and minutes", () => {
   assert.equal(fmtDur(undefined), "")
   assert.equal(fmtDur(500), "500ms")

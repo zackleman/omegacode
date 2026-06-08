@@ -422,7 +422,7 @@ clean-vs-dirty/preserve-on-changes semantics are identical.)
 
 ## 8. Concurrency, caps, budget
 
-- **Concurrency cap** (default 8, `--concurrency`): a semaphore gates how many `runAgent`
+- **Concurrency cap** (default 100, `--concurrency`): a semaphore gates how many `runAgent`
   calls execute at once; `parallel`/`pipeline` submit all thunks but only N run concurrently. The cap is
   global across providers. Codex agents multiplex over one app-server process (a **process pool** is the
   escape hatch if it saturates); Claude agents are one subprocess per `query()`, so under wide Claude
@@ -583,7 +583,7 @@ already reads files). Noted as a future direction.
   shipped**). Per-run defaults resolve in decreasing precedence: CLI flags
   (`--provider`/`--model`/`--effort`/`--sandbox`/`--cwd`/`--concurrency`/`--budget`), then `meta`
   (`defaultProvider`/`defaultModel`/`defaultSandbox`), then the built-in `DEFAULTS`
-  (`provider: codex`, `sandbox: read-only`, `approval: never`, `concurrency: 8`,
+  (`provider: codex`, `sandbox: read-only`, `approval: never`, `concurrency: 100`,
   `maxAgents: 1000`, `maxFanout: 4096`). The codex app-server binary can be overridden via the `CODEX_BIN`
   environment variable, and the data dir (default `~/.omegacode`) via `OMEGACODE_HOME`.
 

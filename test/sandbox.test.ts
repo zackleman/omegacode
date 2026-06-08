@@ -93,6 +93,18 @@ test("meta must be an object literal with name/description", () => {
   assert.throws(() => parseWorkflow(`export const meta = 5\n`), WorkflowSyntaxError)
 })
 
+test("a non-array meta.phases fails at parse time, not as a TypeError mid-run", () => {
+  // A non-iterable container would otherwise crash the Runtime constructor's declared-phase
+  // loop after the run dir/journal already exist (burned run id, no terminal run event).
+  const bad = `export const meta = { name: "n", description: "d", phases: { title: "Plan" } }\nreturn 1\n`
+  assert.throws(() => parseWorkflow(bad), /meta\.phases must be an array/)
+  assert.throws(() => parseWorkflow(`export const meta = { name: "n", description: "d", phases: "Plan" }\n`), WorkflowSyntaxError)
+  // A well-formed array (even with unusable entries — the runtime skips those) still parses.
+  // meta crosses the vm boundary, so compare structurally via JSON (not prototype-strict deepEqual).
+  const ok = `export const meta = { name: "n", description: "d", phases: [{ title: "Plan" }, {}] }\nreturn 1\n`
+  assert.equal(JSON.stringify(parseWorkflow(ok).meta.phases), JSON.stringify([{ title: "Plan" }, {}]))
+})
+
 test("runInSandbox runs the body and resolves its return value", async () => {
   const src = `export const meta = { name: "n", description: "d" }\nreturn 1 + 2\n`
   const { body } = parseWorkflow(src)

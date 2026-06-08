@@ -130,7 +130,7 @@ export const DEFAULTS: Omit<RunDefaults, "cwd"> = {
   provider: "codex",
   sandbox: "read-only",
   approval: "never",
-  concurrency: 8,
+  concurrency: 100,
   maxAgents: 1000,
   maxFanout: 4096,
   budget: null,

@@ -92,6 +92,10 @@ function validateMeta(v: unknown): asserts v is Meta {
   if (typeof o.name !== "string" || o.name.length === 0) throw new WorkflowSyntaxError("meta.name must be a non-empty string")
   if (typeof o.description !== "string" || o.description.length === 0)
     throw new WorkflowSyntaxError("meta.description must be a non-empty string")
+  // Entries stay lenient (display-only; the runtime skips unusable titles), but a non-array
+  // container would crash the Runtime constructor's declared-phase loop AFTER the run dir and
+  // journal exist — fail here, where every other meta mistake fails.
+  if (o.phases !== undefined && !Array.isArray(o.phases)) throw new WorkflowSyntaxError("meta.phases must be an array")
 }
 
 /** Match the brace at `open`, skipping strings and comments. Returns the index of the matching `}`. */

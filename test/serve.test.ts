@@ -360,6 +360,28 @@ describe("startViewer HTTP", () => {
     assert.equal(missing.status, 404)
   })
 
+  test("declared phases fold as pending until entered; pending never downgrades a started phase", async () => {
+    await writeRun("phased", [
+      runStarted("phased", 3000),
+      { t: 3001, type: "phase", index: 1, title: "Scan", pending: true },
+      { t: 3001, type: "phase", index: 2, title: "Fix", pending: true },
+      { t: 3002, type: "phase", index: 1, title: "Scan" }, // entered
+      { t: 3003, type: "agent", index: 0, label: "a0", provider: "codex", state: "running", phaseIndex: 1, phaseTitle: "Scan" },
+      // A resume appends a fresh pending announcement AFTER the phase already started — it
+      // must not flip the phase back to pending.
+      { t: 3004, type: "phase", index: 1, title: "Scan", pending: true },
+    ])
+    const { body } = await get("/api/runs/phased")
+    const snap = JSON.parse(body) as { phases: Array<{ index: number; title: string; pending: boolean; agents: unknown[] }> }
+    assert.equal(snap.phases.length, 2)
+    assert.equal(snap.phases[0]!.title, "Scan")
+    assert.equal(snap.phases[0]!.pending, false)
+    assert.equal(snap.phases[0]!.agents.length, 1)
+    assert.equal(snap.phases[1]!.title, "Fix")
+    assert.equal(snap.phases[1]!.pending, true)
+    assert.equal(snap.phases[1]!.agents.length, 0)
+  })
+
   test("L20: malformed percent-encoding → 400, not 500", async () => {
     for (const bad of ["/api/runs/%", "/api/runs/%zz", "/api/runs/%E0%A4%A/stream", "/api/runs/%/agents/0"]) {
       const { status } = await get(bad)

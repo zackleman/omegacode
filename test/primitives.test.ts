@@ -82,6 +82,7 @@ function build(opts: {
   hooks?: WorkerHooks
   worker?: TestWorker
   ac?: AbortController
+  declaredPhases?: Array<{ title: string; detail?: string }>
 } = {}): Built {
   const home = mkdtempSync(join(tmpdir(), "omega-prim-"))
   const prev = process.env.OMEGACODE_HOME
@@ -102,6 +103,7 @@ function build(opts: {
     seed: 12345,
     baseTimeMs: 1_000_000,
     signal: ac.signal,
+    declaredPhases: opts.declaredPhases,
   })
   return {
     runtime,
@@ -137,6 +139,36 @@ test("happy path: a single agent returns its text and journals a completed resul
     const [entry] = [...loaded.results.values()]
     assert.equal(entry.status, "completed")
     assert.equal(entry.result, "echo:hi")
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("declared phases announce pending up front; phase() re-announces the same index on entry", async () => {
+  // Malformed/duplicate declared entries are skipped (meta.phases is display-only, not validated).
+  const b = build({ declaredPhases: [{ title: "Scan" }, { title: "Fix" }, { title: "" }, { title: "Scan" }] })
+  try {
+    assert.deepEqual(
+      b.sink.events.filter((e) => e.type === "phase"),
+      [
+        { type: "phase", index: 1, title: "Scan", pending: true },
+        { type: "phase", index: 2, title: "Fix", pending: true },
+      ],
+    )
+
+    // Entering a declared phase keeps its declared index and emits the non-pending event;
+    // an undeclared title gets the next index after the declared block.
+    await runBody(b, `phase("Fix"); phase("Extra"); phase("Fix")`)
+    const announced = b.sink.events.filter((e) => e.type === "phase").slice(2)
+    assert.deepEqual(announced, [
+      { type: "phase", index: 2, title: "Fix" },
+      { type: "phase", index: 3, title: "Extra" },
+    ])
+
+    // An agent under a declared-but-unentered phase announces it too (opts.phase path).
+    await runBody(b, `await agent("hi", { phase: "Scan" })`)
+    const scan = b.sink.events.filter((e) => e.type === "phase" && !("pending" in e) && e.title === "Scan")
+    assert.deepEqual(scan, [{ type: "phase", index: 1, title: "Scan" }])
   } finally {
     b.cleanup()
   }

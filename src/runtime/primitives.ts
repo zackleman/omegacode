@@ -70,6 +70,8 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
+  /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
+  declaredPhases?: Array<{ title: string; detail?: string }>
 }
 
 /**
@@ -110,6 +112,10 @@ export class Runtime {
   private phaseIndex = 0
   private currentPhase: { index: number; title: string } | undefined
   private readonly phaseByTitle = new Map<string, number>()
+  // Phases that have emitted their non-pending event. A declared phase reserves its index (and
+  // emits a pending event) at construction, but is only "announced" when phase() reaches it —
+  // that second emit is what places the terminal renderer's header at the right spot in the stream.
+  private readonly announcedPhases = new Set<number>()
   private readonly sem: Semaphore
   private readonly worktreeMutex = new Semaphore(1)
   private readonly explicitKeys = new Set<string>()
@@ -126,6 +132,16 @@ export class Runtime {
     // Fresh display indices start past anything a prior attempt journaled, so an agent whose key is
     // NOT in the journal can never collide with a journaled agent's index/transcript (see agentImpl).
     this.displayIndex = Math.max(0, ...o.loaded.indexByKey.values())
+    // Reserve indices 1..N for declared phases in meta order, so phase() calls with matching
+    // titles land in their declared slot regardless of execution order. meta.phases isn't
+    // shape-validated (it's display-only), so skip entries without a usable title.
+    for (const p of o.declaredPhases ?? []) {
+      if (typeof p?.title !== "string" || p.title.length === 0) continue
+      if (this.phaseByTitle.has(p.title)) continue
+      const index = ++this.phaseIndex
+      this.phaseByTitle.set(p.title, index)
+      this.o.events.emit({ type: "phase", index, title: p.title, pending: true })
+    }
   }
 
   globals(): WorkflowGlobals {
@@ -171,6 +187,11 @@ export class Runtime {
     if (index === undefined) {
       index = ++this.phaseIndex
       this.phaseByTitle.set(title, index)
+    }
+    // First actual entry emits the non-pending event — even for a declared phase, whose pending
+    // event already reserved the index. Folds clear `pending` on this re-emit (same index).
+    if (!this.announcedPhases.has(index)) {
+      this.announcedPhases.add(index)
       this.o.events.emit({ type: "phase", index, title })
     }
     return index

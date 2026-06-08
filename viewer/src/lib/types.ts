@@ -27,6 +27,8 @@ export interface AgentSnapshot {
 export interface PhaseSnapshot {
   index: number
   title: string
+  /** Declared in meta.phases but not yet entered by phase() (no agents have run under it). */
+  pending?: boolean
   agents: AgentSnapshot[]
 }
 
@@ -54,7 +56,7 @@ export interface RunSummary {
 
 export type WorkflowEvent =
   | { t: number; type: "run"; status: RunStatus; workflowFile?: string; error?: string }
-  | { t: number; type: "phase"; index: number; title: string }
+  | { t: number; type: "phase"; index: number; title: string; pending?: boolean }
   | ({ t: number; type: "agent" } & Omit<AgentSnapshot, "t">)
   | { t: number; type: "log"; message: string }
 

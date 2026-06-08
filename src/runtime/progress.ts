@@ -33,7 +33,9 @@ export class TerminalRenderer {
         else this.write((e.status === "completed" ? C.green : C.red)(`\n${e.status === "completed" ? "✓" : "✗"} ${e.status}${e.error ? ": " + e.error : ""}\n`))
         break
       case "phase":
-        this.write(C.cyan(`\n┌ ${e.title}\n`))
+        // Pending events announce declared-but-unreached phases (for the viewer); the header
+        // prints when the phase is actually entered, so it lands above its agents in the stream.
+        if (!e.pending) this.write(C.cyan(`\n┌ ${e.title}\n`))
         break
       case "log":
         this.write(C.dim(`❯ ${e.message}\n`))
