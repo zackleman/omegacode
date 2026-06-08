@@ -66,7 +66,13 @@ omegacode doctor                          # check codex/claude availability
 omegacode guide                           # print the full authoring guide
 ```
 
-`run` also accepts saved workflow names, including the built-ins `deep-research`,
-`code-review`, and `multi-provider-review` (Codex and Claude review the same branch
-independently, then a synthesis merges both) — try `omegacode run deep-research --args
-'"your question"'`. See `omegacode guide` for the complete authoring reference.
+`run` also accepts saved workflow names. Six built-ins ship with the package:
+`deep-research`, `code-review`, and four multi-provider workflows that put the two
+models' decorrelated errors to work — `multi-provider-review` (both review the same
+branch independently, then a synthesis merges both), `bake-off` (both implement the
+same task in isolated worktrees, blind cross-provider judges pick a winner),
+`provider-debate` (propose → attack → rebut for N rounds, then a judge rules), and
+`second-opinion` (both answer cheap; agreement returns merged, disagreement escalates
+to deep effort and adjudicates). Try `omegacode run deep-research --args '"your
+question"'`, or `omegacode workflows` to list them. See `omegacode guide` for the
+complete authoring reference.

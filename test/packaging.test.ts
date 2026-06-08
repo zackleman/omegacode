@@ -397,6 +397,9 @@ describe("real npm pack tarball (M31, post-build)", () => {
       "builtins/deep-research.workflow.js",
       "builtins/code-review.workflow.js",
       "builtins/multi-provider-review.workflow.js",
+      "builtins/bake-off.workflow.js",
+      "builtins/provider-debate.workflow.js",
+      "builtins/second-opinion.workflow.js",
     ]) {
       assert.ok(paths.includes(required), `tarball missing ${required}`)
     }
