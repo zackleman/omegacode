@@ -80,23 +80,32 @@
 
 :root {
   color-scheme: light;
-  --background: oklch(0.9551 0 0);
-  --foreground: oklch(0.3211 0 0);
-  --card: oklch(0.9702 0 0);
-  --card-foreground: oklch(0.3211 0 0);
-  --popover: oklch(0.9702 0 0);
-  --popover-foreground: oklch(0.3211 0 0);
+  /* Anchors. The neutral ramp below is derived from these two by mixing ink
+   * into the canvas, so changing the canvas moves every surface coherently
+   * (ported from bb's anchor-based theme). */
+  --canvas: oklch(1 0 0);
+  --ink: oklch(0.3211 0 0);
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  /* Card and popover are flush with the canvas — elevation is conveyed by
+   * border + shadow, not a surface tint. */
+  --card: var(--canvas);
+  --card-foreground: var(--ink);
+  --popover: var(--canvas);
+  --popover-foreground: var(--ink);
   --primary: oklch(0.4891 0 0);
   --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.9067 0 0);
-  --secondary-foreground: oklch(0.3211 0 0);
-  --muted: oklch(0.8853 0 0);
+  --secondary: color-mix(in oklch, var(--ink) 8%, var(--canvas));
+  --secondary-foreground: var(--ink);
+  --accent: color-mix(in oklch, var(--ink) 8%, var(--canvas));
+  --accent-foreground: var(--ink);
+  --muted: color-mix(in oklch, var(--ink) 11%, var(--canvas));
   --muted-foreground: oklch(0.44 0 0);
   --subtle-foreground: oklch(0.5 0 0);
-  --accent: oklch(0.9 0 0);
-  --accent-foreground: oklch(0.3211 0 0);
-  --state-hover: oklch(0.89 0 0);
-  --state-active: oklch(0.85 0 0);
+  /* Interactive-state fills: translucent ink so the same hover/active step
+   * reads consistently on canvas, cards, and recessed surfaces alike. */
+  --state-hover: color-mix(in oklch, var(--ink) 5.9%, transparent);
+  --state-active: color-mix(in oklch, var(--ink) 11.8%, transparent);
   --destructive: oklch(0.45 0.19 25.8625);
   --destructive-foreground: oklch(1 0 0);
   --attention: oklch(0.74 0.15 80);
@@ -108,19 +117,19 @@
   --success-foreground: oklch(0.3211 0 0);
   --diff-added: oklch(0.4 0.13 163);
   --diff-removed: oklch(0.4 0.17 28);
-  --border: oklch(0.8576 0 0);
-  --border-hairline: oklch(0.85 0 0);
-  --input: oklch(0.75 0 0);
+  --border: color-mix(in oklch, var(--ink) 14%, var(--canvas));
+  --border-hairline: color-mix(in oklch, var(--ink) 14.7%, var(--canvas));
+  --input: color-mix(in oklch, var(--ink) 29.5%, var(--canvas));
   --ring: oklch(0.4891 0 0);
-  --surface-recessed: color-mix(in oklch, oklch(0.8853 0 0) 30%, transparent);
-  --surface-raised: color-mix(in oklch, oklch(0.955 0 0) 70%, transparent);
-  --surface-scrim: color-mix(in oklch, oklch(0.955 0 0) 92%, transparent);
-  --surface-selected: color-mix(in oklch, var(--primary) 10%, transparent);
+  --surface-recessed: color-mix(in oklch, var(--ink) 6%, transparent);
+  --surface-raised: color-mix(in oklch, var(--ink) 2.5%, transparent);
+  --surface-scrim: color-mix(in oklch, oklch(1 0 0) 92%, transparent);
+  --surface-selected: color-mix(in oklch, var(--primary) 16%, transparent);
   --surface-selected-border: color-mix(in oklch, var(--primary) 35%, transparent);
-  --sidebar: oklch(0.937 0 0);
-  --sidebar-foreground: oklch(0.3211 0 0);
-  --sidebar-border: oklch(0.8576 0 0);
-  /* Provider accents. */
+  --sidebar: color-mix(in oklch, var(--ink) 2.2%, var(--canvas));
+  --sidebar-foreground: var(--ink);
+  --sidebar-border: color-mix(in oklch, var(--ink) 14%, var(--canvas));
+  /* Provider accents (omegacode-specific). */
   --codex: oklch(0.62 0.17 250);
   --claude: oklch(0.68 0.16 47);
   --font-sans: "Inter Variable", Inter, sans-serif;
@@ -141,23 +150,28 @@
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.195 0 0);
-  --foreground: oklch(0.8853 0 0);
-  --card: oklch(0.2435 0 0);
-  --card-foreground: oklch(0.8853 0 0);
-  --popover: oklch(0.2435 0 0);
-  --popover-foreground: oklch(0.8853 0 0);
+  --canvas: oklch(0.195 0 0);
+  --ink: oklch(0.8853 0 0);
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  /* Card and popover stay flush with the canvas here too — elevation comes from
+   * border + shadow. The lift ramp below uses larger steps than light so the
+   * neutral surfaces still read against the darker canvas. */
+  --card: var(--canvas);
+  --card-foreground: var(--ink);
+  --popover: var(--canvas);
+  --popover-foreground: var(--ink);
   --primary: oklch(0.7058 0 0);
   --primary-foreground: oklch(0.2178 0 0);
-  --secondary: oklch(0.28 0 0);
-  --secondary-foreground: oklch(0.8853 0 0);
-  --muted: oklch(0.285 0 0);
+  --secondary: color-mix(in oklch, var(--ink) 13%, var(--canvas));
+  --secondary-foreground: var(--ink);
+  --accent: color-mix(in oklch, var(--ink) 13%, var(--canvas));
+  --accent-foreground: var(--ink);
+  --muted: color-mix(in oklch, var(--ink) 16%, var(--canvas));
   --muted-foreground: oklch(0.78 0 0);
   --subtle-foreground: oklch(0.68 0 0);
-  --accent: oklch(0.285 0 0);
-  --accent-foreground: oklch(0.8853 0 0);
-  --state-hover: oklch(0.29 0 0);
-  --state-active: oklch(0.35 0 0);
+  --state-hover: color-mix(in oklch, var(--ink) 13.8%, transparent);
+  --state-active: color-mix(in oklch, var(--ink) 22.5%, transparent);
   --destructive: oklch(0.56 0.19 22.1703);
   --destructive-foreground: oklch(1 0 0);
   --attention: oklch(0.8 0.15 80);
@@ -169,18 +183,18 @@
   --success-foreground: oklch(0.2178 0 0);
   --diff-added: oklch(0.77 0.17 163);
   --diff-removed: oklch(0.72 0.19 22);
-  --border: oklch(0.329 0 0);
-  --border-hairline: oklch(0.34 0 0);
-  --input: oklch(0.42 0 0);
+  --border: color-mix(in oklch, var(--ink) 19.4%, var(--canvas));
+  --border-hairline: color-mix(in oklch, var(--ink) 21%, var(--canvas));
+  --input: color-mix(in oklch, var(--ink) 32.6%, var(--canvas));
   --ring: oklch(0.7058 0 0);
-  --surface-recessed: color-mix(in oklch, oklch(0.285 0 0) 30%, transparent);
-  --surface-raised: color-mix(in oklch, oklch(0.195 0 0) 70%, transparent);
+  --surface-recessed: color-mix(in oklch, var(--ink) 6%, transparent);
+  --surface-raised: color-mix(in oklch, var(--ink) 2.5%, transparent);
   --surface-scrim: color-mix(in oklch, oklch(0.195 0 0) 92%, transparent);
   --surface-selected: color-mix(in oklch, var(--primary) 12%, transparent);
   --surface-selected-border: color-mix(in oklch, var(--primary) 35%, transparent);
-  --sidebar: oklch(0.24 0 0);
-  --sidebar-foreground: oklch(0.8853 0 0);
-  --sidebar-border: oklch(0.32 0 0);
+  --sidebar: color-mix(in oklch, var(--ink) 4.3%, var(--canvas));
+  --sidebar-foreground: var(--ink);
+  --sidebar-border: color-mix(in oklch, var(--ink) 18.1%, var(--canvas));
   --codex: oklch(0.7 0.15 250);
   --claude: oklch(0.76 0.15 55);
   /* ANSI 16-color palette (dark). */
