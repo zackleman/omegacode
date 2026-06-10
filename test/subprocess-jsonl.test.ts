@@ -170,6 +170,17 @@ test("nonzero exit resolves (worker decides) and exitError carries the stderr ta
   assert.match(err.message, /model not found/)
 })
 
+test("a signal-killed child (OOM, system pressure) is a RETRYABLE provider_exit", async () => {
+  const h = harness()
+  await tick()
+  h.proc.end(null, "SIGKILL")
+  const exit = await h.run
+  const err = exitError("pi", "pi", exit)
+  assert.equal(err.code, "provider_exit")
+  assert.equal(err.retryable, true)
+  assert.match(err.message, /signal SIGKILL/)
+})
+
 test("stderr is a bounded ring buffer (keeps the tail)", async () => {
   const h = harness({ stderrLimit: 32 })
   await tick()
@@ -316,6 +327,10 @@ test("parseVersion / versionAtLeast handle real version strings", () => {
   assert.deepEqual(parseVersion("opencode 1.16.2 (build abc)"), [1, 16, 2])
   assert.deepEqual(parseVersion("v2.0"), [2, 0, 0])
   assert.equal(parseVersion("nope"), undefined)
+  // banner noise BEFORE the version line must not win (last version-bearing line is the binary's)
+  assert.deepEqual(parseVersion("npm notice: new version 11.2.0 available\n0.79.1"), [0, 79, 1])
+  // trailing build info on the SAME line must not win (first match on that line is the binary's)
+  assert.deepEqual(parseVersion("1.16.2 (node 20.11.0)"), [1, 16, 2])
 
   assert.equal(versionAtLeast("0.79.1", "0.79.1"), true)
   assert.equal(versionAtLeast("0.80.0", "0.79.1"), true)

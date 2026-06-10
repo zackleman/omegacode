@@ -208,7 +208,10 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
   })
 }
 
-/** The standard "process exited nonzero with no recognized terminal event" failure. */
+/** The standard "process exited nonzero with no recognized terminal event" failure. A nonzero
+ *  exit CODE is a provider-reported failure (bad flags, bad model — retrying repeats it), but a
+ *  SIGNAL death (OOM kill, system pressure) is environmental and may well succeed on retry —
+ *  matching the codex transport's retryability stance. */
 export function exitError(provider: ProviderId, bin: string, exit: JsonlExit): AgentError {
   const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code ?? "null"}`
   const tail = exit.stderrTail ? `\n--- stderr (tail) ---\n${exit.stderrTail}` : ""
@@ -216,7 +219,7 @@ export function exitError(provider: ProviderId, bin: string, exit: JsonlExit): A
     provider,
     code: "provider_exit",
     message: `${bin} exited (${how}) without a result${tail}`,
-    retryable: false,
+    retryable: exit.signal !== null,
   })
 }
 
@@ -273,11 +276,19 @@ export function captureStdout(o: {
   })
 }
 
-/** First dotted number in a version string ("1.16.2", "opencode 1.16.2", "v0.79.1"). */
+/**
+ * Extract the binary's version from `--version` output: the FIRST dotted number on the LAST line
+ * that carries one. Banner noise (an npx/update notice with its own version) prints BEFORE the
+ * real version line, and trailing build info on the same line ("1.16.2 (node 20.11.0)") comes
+ * after the version — this picks "1.16.2" in both shapes.
+ */
 export function parseVersion(s: string): number[] | undefined {
-  const m = s.match(/(\d+)\.(\d+)(?:\.(\d+))?/)
-  if (!m) return undefined
-  return [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)]
+  const lines = s.split("\n")
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i]!.match(/(\d+)\.(\d+)(?:\.(\d+))?/)
+    if (m) return [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)]
+  }
+  return undefined
 }
 
 export function versionAtLeast(found: string, min: string): boolean {

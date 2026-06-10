@@ -87,6 +87,13 @@ export class OpencodeWorker implements Worker {
         message: `opencode cannot enforce a "${spec.sandbox}" sandbox (no OS-level confinement; bash is unrestricted) — set sandbox: "danger-full-access" to use provider "opencode"`,
       })
     }
+    if (spec.approval !== "never") {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "unsupported_option",
+        message: `opencode runs as a one-shot subprocess and cannot surface approval requests to omegacode — use approval: "never" with provider "opencode"`,
+      })
+    }
     await this.ensureVersion()
 
     const args = [
@@ -205,8 +212,11 @@ export class OpencodeWorker implements Worker {
           case "text": {
             const t = strOf(part?.text) ?? strOf(value.text)
             if (t !== undefined) {
-              text += t
-              forward({ kind: "text", text: t })
+              // Terminal text PARTS are whole blocks, not deltas — separate them so a multi-part
+              // answer doesn't run together.
+              const chunk = text.length > 0 ? "\n\n" + t : t
+              text += chunk
+              forward({ kind: "text", text: chunk })
             }
             return
           }

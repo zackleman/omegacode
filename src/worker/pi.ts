@@ -96,6 +96,13 @@ export class PiWorker implements Worker {
         message: `pi cannot enforce a "${spec.sandbox}" sandbox (tool allowlists are not OS confinement; bash is unrestricted) — set sandbox: "danger-full-access" to use provider "pi"`,
       })
     }
+    if (spec.approval !== "never") {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "unsupported_option",
+        message: `pi runs as a one-shot subprocess and cannot surface approval requests to omegacode — use approval: "never" with provider "pi"`,
+      })
+    }
     await this.ensureVersion()
 
     const args = this.baseArgs(spec)
@@ -229,6 +236,10 @@ export class PiWorker implements Worker {
       bin: this.bin,
       args,
       cwd: spec.cwd,
+      // Runs deliberately inherit the user's env UN-isolated: pi's auth lives inside the agent
+      // dir (~/.pi/agent/auth.json), so a scratch PI_CODING_AGENT_DIR would break every run.
+      // --no-session keeps run state out of the user's session history; only the --version
+      // probe (which needs no auth) gets the scratch-dir treatment.
       env: process.env,
       stdin: prompt,
       signal: ctx.signal,

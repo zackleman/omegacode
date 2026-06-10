@@ -236,13 +236,14 @@ test("exit 0 with no assistant text is no_result; nonzero exit is provider_exit 
   })
 })
 
-test("fail-closed pre-spawn rejections: read-only (with remedy), workspace-write, maxTurns, effort", async () => {
+test("fail-closed pre-spawn rejections: read-only (with remedy), workspace-write, maxTurns, effort, approval", async () => {
   const h = harness([]) // nothing may spawn
   for (const [over, pattern] of [
     [{ sandbox: "read-only" }, /set sandbox: "danger-full-access" to use provider "opencode"/],
     [{ sandbox: "workspace-write" }, /cannot enforce a "workspace-write" sandbox/],
     [{ maxTurns: 5 }, /no enforceable turn cap/],
     [{ effort: "high" }, /does not support effort/],
+    [{ approval: "on-request" }, /cannot surface approval requests/],
   ] as Array<[Partial<AgentSpec>, RegExp]>) {
     await assert.rejects(h.worker.runAgent(spec(over), ctx()), (err: unknown) => {
       assert.ok(err instanceof AgentError)
@@ -353,4 +354,17 @@ test("unknown event types are ignored (forward compatibility)", async () => {
   ])
   const result = await h.worker.runAgent(spec(), ctx())
   assert.equal(result.text, "ok")
+})
+
+test("multiple terminal text parts are separated, not run together", async () => {
+  const h = harness([
+    versionOk,
+    (p) => {
+      p.pushLine({ type: "text", sessionID: "s", part: { text: "First block." } })
+      p.pushLine({ type: "text", sessionID: "s", part: { text: "Second block." } })
+      p.end(0)
+    },
+  ])
+  const result = await h.worker.runAgent(spec(), ctx())
+  assert.equal(result.text, "First block.\n\nSecond block.")
 })

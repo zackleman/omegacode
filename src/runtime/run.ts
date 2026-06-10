@@ -35,6 +35,9 @@ export interface RunOverrides {
   claudeModel?: string
   /** Path to the claude-code executable (forwarded to the Claude worker). */
   pathToClaudeCodeExecutable?: string
+  /** Binary overrides for the subprocess workers (programmatic equivalent of OPENCODE_BIN/PI_BIN). */
+  opencodeBin?: string
+  piBin?: string
 }
 
 export interface RunOptions {
@@ -108,8 +111,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const factory = new DefaultWorkerFactory({
     fake: opts.fake,
     codexBin: process.env.CODEX_BIN,
-    opencodeBin: process.env.OPENCODE_BIN,
-    piBin: process.env.PI_BIN,
+    opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
+    piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
     // Claude-specific factory defaults (L5). Only forwarded when the provider is claude-code; a
     // per-call opts.model still overrides via AgentSpec.model.
     claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined),
