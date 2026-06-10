@@ -35,6 +35,9 @@ export interface RunOverrides {
   claudeModel?: string
   /** Path to the claude-code executable (forwarded to the Claude worker). */
   pathToClaudeCodeExecutable?: string
+  /** Binary overrides for the subprocess workers (programmatic equivalent of OPENCODE_BIN/PI_BIN). */
+  opencodeBin?: string
+  piBin?: string
 }
 
 export interface RunOptions {
@@ -108,6 +111,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const factory = new DefaultWorkerFactory({
     fake: opts.fake,
     codexBin: process.env.CODEX_BIN,
+    opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
+    piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
     // Claude-specific factory defaults (L5). Only forwarded when the provider is claude-code; a
     // per-call opts.model still overrides via AgentSpec.model.
     claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined),
@@ -192,8 +197,12 @@ function resolveDefaults(meta: { defaultProvider?: ProviderId; defaultModel?: st
   const sandbox = o.sandbox ?? meta.defaultSandbox ?? DEFAULTS.sandbox
   checkSpecEnum("sandbox", sandbox)
   checkSpecEnum("effort", o.effort)
+  // meta.defaultProvider arrives from an untyped workflow file — a typo here would otherwise ride
+  // into every spec and only fail at the factory (or not at all under --fake).
+  const provider = o.provider ?? meta.defaultProvider ?? DEFAULTS.provider
+  checkSpecEnum("provider", provider)
   return {
-    provider: o.provider ?? meta.defaultProvider ?? DEFAULTS.provider,
+    provider,
     model: o.model ?? meta.defaultModel,
     effort: o.effort,
     sandbox,
