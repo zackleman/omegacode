@@ -643,7 +643,8 @@ Usage:
   omegacode run <file.workflow.js | name> [options]   Run a workflow (by path or saved name)
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
       --provider codex|claude-code|opencode|pi   default provider (per-agent opts override)
-      --model <m>  --effort <e>  --sandbox read-only|workspace-write|danger-full-access
+      --model <m>                          default model — set together with --provider (both or neither)
+      --effort <e>  --sandbox read-only|workspace-write|danger-full-access
       --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})
       --budget <N>                         output-token ceiling (enables budget.*)
       --resume <runId>                     replay unchanged prefix, re-run the rest

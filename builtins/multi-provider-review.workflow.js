@@ -17,8 +17,8 @@ export const meta = {
 const MAX_FINDINGS_PER_REVIEW = 15
 
 const REVIEWERS = [
-  { provider: "codex", name: "Codex" },
-  { provider: "claude-code", name: "Claude" },
+  { provider: "codex", model: "gpt-5.5", name: "Codex" },
+  { provider: "claude-code", model: "claude-fable-5", name: "Claude" },
 ]
 
 const target =
@@ -100,6 +100,7 @@ const reviews = (
     REVIEWERS.map((r) => () =>
       agent(reviewPrompt, {
         provider: r.provider,
+        model: r.model,
         label: `review: ${r.name}`,
         phase: "Review",
         schema: REVIEW_SCHEMA,

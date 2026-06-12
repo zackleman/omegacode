@@ -56,13 +56,16 @@ const findings = await parallel(
 phase("Verify")
 return await pipeline(
   findings.filter(Boolean).flatMap((f) => f.issues),
-  (issue) => agent(`Try to refute: ${issue.desc}`, { provider: "claude-code", schema: VERDICT }),
+  (issue) => agent(`Try to refute: ${issue.desc}`, { provider: "claude-code", model: "claude-fable-5", schema: VERDICT }),
 )
 ```
 
 Plain JavaScript, no imports — the DSL is injected. Each `agent()` spawns a real Codex, Claude
-Code, OpenCode, or pi agent; omit `provider` to inherit whatever the run was started with
-(`--provider`, default `codex`), or pin it per call when you want cross-provider diversity.
+Code, OpenCode, or pi agent; omit `provider`/`model` to inherit whatever the run was started with
+(`--provider --model`, default `codex`), or pin them per call when you want cross-provider
+diversity. Provider and model are **both-or-neither** at every site (per-call, meta defaults,
+CLI flags): a lone `provider:` or `model:` is rejected, so a model meant for one provider can
+never silently ride another provider's call.
 
 ## CLI
 

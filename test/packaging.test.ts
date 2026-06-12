@@ -66,7 +66,11 @@ describe("ambient d.ts is self-contained (M31)", () => {
         [
           '/// <reference path="./ambient.d.ts" />',
           "const f = async () => {",
-          '  const text = await agent("hi", { provider: "codex", effort: "none", worktree: true })',
+          '  const text = await agent("hi", { provider: "codex", model: "gpt-5.5", effort: "none", worktree: true })',
+          "  // @ts-expect-error — provider without model violates the both-or-neither pair type",
+          '  void agent("hi", { provider: "codex" })',
+          "  // @ts-expect-error — model without provider violates the both-or-neither pair type",
+          '  void agent("hi", { model: "gpt-5.5" })',
           "  log(text)",
           '  const xs = await parallel([() => agent("a"), () => agent("b")])',
           '  await pipeline(xs, (prev, item, i) => String(prev) + String(item) + i)',
@@ -192,7 +196,12 @@ describe("ambient inlined types stay in sync with dsl/types.ts (M31 drift guard)
       const body = src.slice(start, end)
       return [...body.matchAll(/^\s+(\w+)\?:/gm)].map((x) => x[1]).sort()
     }
-    assert.deepEqual(interfaceKeys(ambient, "OmegacodeAgentOpts"), interfaceKeys(types, "AgentOpts"))
+    assert.deepEqual(interfaceKeys(ambient, "OmegacodeAgentBaseOpts"), interfaceKeys(types, "AgentOptsBase"))
+    // The provider/model pair rides a both-or-neither union on top of the base opts in BOTH files
+    // (see ProviderModelPair) — the base interfaces must not re-grow either key field-wise.
+    assert.ok(/type OmegacodeAgentOpts = OmegacodeAgentBaseOpts &/.test(ambient), "ambient pair union missing")
+    assert.ok(/\{ provider\?: never; model\?: never \}/.test(ambient), "ambient both-or-neither arm missing")
+    assert.ok(/type AgentOpts = AgentOptsBase & ProviderModelPair/.test(types), "types.ts pair union missing")
   })
 })
 

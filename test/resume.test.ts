@@ -548,6 +548,28 @@ test("M12: invalid concurrency fails fast instead of hanging the run", async () 
   })
 })
 
+test("--provider/--model overrides are both-or-neither, before the run dir exists", async () => {
+  // A lone --model paired with the default provider (or a lone --provider with a model left over
+  // from somewhere else) is the cross-site mix the pairing rule exists to prevent.
+  await withHome(async (home) => {
+    const file = join(home, "wf.js")
+    writeFileSync(file, WF)
+    await assert.rejects(
+      runWorkflow({ file, fake: true, quiet: true, overrides: { provider: "claude-code" } }),
+      /provider "claude-code" without model/,
+    )
+    await assert.rejects(
+      runWorkflow({ file, fake: true, quiet: true, overrides: { model: "gpt-5.5" } }),
+      /model "gpt-5.5" without provider/,
+    )
+    // the pair (and neither) still run
+    const both = await runWorkflow({ file, fake: true, quiet: true, overrides: { provider: "claude-code", model: "claude-fable-5" } })
+    assert.equal(both.status, "completed")
+    const neither = await runWorkflow({ file, fake: true, quiet: true })
+    assert.equal(neither.status, "completed")
+  })
+})
+
 test("a journaled failure in a parallel branch re-runs on resume (rec #4)", async () => {
   await withHome(async (home) => {
     const runId = "wf_fail"

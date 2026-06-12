@@ -96,6 +96,14 @@ function validateMeta(v: unknown): asserts v is Meta {
   // container would crash the Runtime constructor's declared-phase loop AFTER the run dir and
   // journal exist — fail here, where every other meta mistake fails.
   if (o.phases !== undefined && !Array.isArray(o.phases)) throw new WorkflowSyntaxError("meta.phases must be an array")
+  // Both-or-neither (see ProviderModelPair): a lone defaultModel would pair with a provider chosen
+  // elsewhere — a model meant for a different provider. Failing here means `omegacode validate`
+  // catches it without a run, before resolveDefaults re-checks at run time.
+  if ((o.defaultProvider === undefined) !== (o.defaultModel === undefined)) {
+    throw new WorkflowSyntaxError(
+      "meta.defaultProvider and meta.defaultModel must be specified together (set both, or omit both)",
+    )
+  }
 }
 
 /** Match the brace at `open`, skipping strings and comments. Returns the index of the matching `}`. */

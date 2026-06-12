@@ -107,10 +107,10 @@ test("explicitKey is stable regardless of position/prompt/opts", () => {
 })
 
 test("keyedOpts still works as a KeyedFields builder for callers without a resolved spec", () => {
-  const o = keyedOpts({ provider: "codex", worktree: true })
+  const o = keyedOpts({ provider: "codex", model: "gpt-5.5", worktree: true })
   assert.equal(o.provider, "codex")
   assert.equal(o.worktree, true)
-  assert.equal(o.model, null)
+  assert.equal(o.model, "gpt-5.5")
 })
 
 test("ROOT_KEY is version-tagged (changes with KEY_VERSION)", () => {

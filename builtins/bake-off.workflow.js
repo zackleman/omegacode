@@ -17,8 +17,8 @@ export const meta = {
 }
 
 const CONTENDERS = [
-  { provider: "codex", name: "Codex" },
-  { provider: "claude-code", name: "Claude" },
+  { provider: "codex", model: "gpt-5.5", name: "Codex" },
+  { provider: "claude-code", model: "claude-fable-5", name: "Claude" },
 ]
 
 const task =
@@ -74,7 +74,7 @@ const built = (
           `if available and make them pass. COMMIT all of your work to the current branch with clear ` +
           `messages — uncommitted changes will not be judged. Do not push.\n\n` +
           `When done, summarize your approach and exactly what you verified (tests run, manual checks).`,
-        { provider: s.provider, label: `implement: ${s.name}`, phase: "Implement", worktree: s.branch, schema: IMPL_SCHEMA },
+        { provider: s.provider, model: s.model, label: `implement: ${s.name}`, phase: "Implement", worktree: s.branch, schema: IMPL_SCHEMA },
       ).then((r) => ({ ...s, approach: r.approach, tested: r.tested })),
     ),
   )
@@ -109,7 +109,7 @@ if (built.length === 1) {
   verdicts = (
     await parallel(
       CONTENDERS.map((j) => () =>
-        agent(judgePrompt, { provider: j.provider, label: `judge: ${j.name}`, phase: "Judge", schema: JUDGE_SCHEMA }).then(
+        agent(judgePrompt, { provider: j.provider, model: j.model, label: `judge: ${j.name}`, phase: "Judge", schema: JUDGE_SCHEMA }).then(
           (v) => ({ judge: j.name, ...v }),
         ),
       ),

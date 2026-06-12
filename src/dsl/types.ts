@@ -16,12 +16,20 @@ export type Approval = "never" | "on-request"
 /** A plain JSON Schema object (draft-07-ish). We do not constrain it further at the type level. */
 export type JSONSchema = Record<string, unknown>
 
+/**
+ * Provider and model are specified together or not at all (both-or-neither). A lone `provider`
+ * used to inherit the run-default `model` — a model meant for a DIFFERENT provider (a real run
+ * passed gpt-5.5 to claude-code that way). Pairing them at every specification site (per-call
+ * opts, meta defaults, CLI flags) makes that mix impossible; model strings themselves stay open.
+ */
+export type ProviderModelPair =
+  | { provider: ProviderId; model: string }
+  | { provider?: never; model?: never }
+
 /** Options an author passes to `agent()`. All optional; defaults come from meta/config/CLI. */
-export interface AgentOpts {
-  provider?: ProviderId
+interface AgentOptsBase {
   label?: string
   phase?: string
-  model?: string
   effort?: Effort
   cwd?: string
   sandbox?: Sandbox
@@ -34,6 +42,8 @@ export interface AgentOpts {
   /** Hard cap on agent turns (provider-enforced where supported). */
   maxTurns?: number
 }
+
+export type AgentOpts = AgentOptsBase & ProviderModelPair
 
 /** A fully-resolved request handed to a Worker (no undefined for required policy fields). */
 export interface AgentSpec {
@@ -78,16 +88,21 @@ export interface AgentResult {
   usage: AgentUsage
 }
 
-/** The `meta` literal at the top of a workflow file. */
-export interface Meta {
+/** The `meta` literal at the top of a workflow file. defaultProvider/defaultModel follow the
+ *  same both-or-neither rule as agent() opts (see ProviderModelPair). */
+interface MetaBase {
   name: string
   description: string
   phases?: Array<{ title: string; detail?: string }>
-  defaultProvider?: ProviderId
-  defaultModel?: string
   defaultSandbox?: Sandbox
   whenToUse?: string
 }
+
+export type Meta = MetaBase &
+  (
+    | { defaultProvider: ProviderId; defaultModel: string }
+    | { defaultProvider?: never; defaultModel?: never }
+  )
 
 /** The token budget surfaced to a workflow. `total` is the ceiling (null = no ceiling). */
 export interface WorkflowBudget {

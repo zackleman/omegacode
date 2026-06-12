@@ -634,9 +634,40 @@ test("H14: agent() rejects invalid provider/sandbox/effort/approval values at sp
     // valid values still resolve and run — including the new provider ids
     const ok = await runBody(b, `return await agent("y", { sandbox: "read-only", effort: "high", approval: "never" })`)
     assert.equal(ok, "echo:y")
-    const pi = await runBody(b, `return await agent("z", { provider: "pi", sandbox: "danger-full-access" })`)
+    const pi = await runBody(b, `return await agent("z", { provider: "pi", model: "openrouter/moonshotai/kimi-k2.6", sandbox: "danger-full-access" })`)
     assert.equal(pi, "echo:z")
     assert.equal(b.worker.calls.at(-1)?.provider, "pi")
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("provider/model are both-or-neither in agent() opts (a lone half must not mix with run defaults)", async () => {
+  // A lone provider used to inherit the run-default model — a model meant for a DIFFERENT provider
+  // (a real run passed a run-wide gpt-5.5 to a per-call claude-code escalation this way).
+  const b = build({ defaults: { provider: "codex", model: "gpt-5.5" } })
+  try {
+    await assert.rejects(
+      runBody(b, `return await agent("x", { provider: "claude-code" })`),
+      /provider "claude-code" without model — provider and model must be specified together/,
+    )
+    await assert.rejects(
+      runBody(b, `return await agent("x", { model: "claude-fable-5" })`),
+      /model "claude-fable-5" without provider — provider and model must be specified together/,
+    )
+    // the worker never saw a half-specified pair
+    assert.equal(b.worker.calls.length, 0)
+    // a typo'd lone provider still reports as an invalid provider, not a pairing error
+    await assert.rejects(runBody(b, `return await agent("x", { provider: "open-code" })`), /invalid provider "open-code"/)
+    // the full pair overrides both halves of the run defaults together
+    const out = await runBody(b, `return await agent("y", { provider: "claude-code", model: "claude-fable-5" })`)
+    assert.equal(out, "echo:y")
+    assert.equal(b.worker.calls.at(-1)?.provider, "claude-code")
+    assert.equal(b.worker.calls.at(-1)?.model, "claude-fable-5")
+    // omitting both inherits the run-default pair
+    await runBody(b, `return await agent("z")`)
+    assert.equal(b.worker.calls.at(-1)?.provider, "codex")
+    assert.equal(b.worker.calls.at(-1)?.model, "gpt-5.5")
   } finally {
     b.cleanup()
   }
