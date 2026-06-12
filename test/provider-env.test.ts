@@ -61,8 +61,8 @@ test("pi: overrides.piBin drives a real spawn with the exact argv/stdin contract
     const wf = join(dir, "pi-env.workflow.js")
     writeFileSync(
       wf,
-      `export const meta = { name: "pi-env-smoke", description: "e2e env wiring", defaultProvider: "pi" }\n` +
-        `return await agent("hello from workflow", { sandbox: "danger-full-access", model: "openrouter/foo/bar", effort: "high", instructions: "be terse", cwd: ${JSON.stringify(dir)} })\n`,
+      `export const meta = { name: "pi-env-smoke", description: "e2e env wiring", defaultProvider: "pi", defaultModel: "openrouter/foo/bar" }\n` +
+        `return await agent("hello from workflow", { sandbox: "danger-full-access", effort: "high", instructions: "be terse", cwd: ${JSON.stringify(dir)} })\n`,
     )
     process.env.OMEGACODE_HOME = join(dir, "home")
     process.env.RECORD = record
@@ -104,7 +104,7 @@ test("opencode: OPENCODE_BIN env drives a real spawn with the exact argv/stdin c
     const wf = join(dir, "oc-env.workflow.js")
     writeFileSync(
       wf,
-      `export const meta = { name: "oc-env-smoke", description: "e2e env wiring", defaultProvider: "opencode" }\n` +
+      `export const meta = { name: "oc-env-smoke", description: "e2e env wiring", defaultProvider: "opencode", defaultModel: "openrouter/foo/bar" }\n` +
         `return await agent("hello from workflow", { sandbox: "danger-full-access", instructions: "be terse", cwd: ${JSON.stringify(dir)} })\n`,
     )
     process.env.OMEGACODE_HOME = join(dir, "home")
@@ -116,7 +116,7 @@ test("opencode: OPENCODE_BIN env drives a real spawn with the exact argv/stdin c
     assert.equal(outcome.result, "ok")
 
     const launch = JSON.parse(readFileSync(record, "utf8")) as Launch
-    assert.deepEqual(launch.argv, ["run", "--format", "json", "--thinking", "--dangerously-skip-permissions"])
+    assert.deepEqual(launch.argv, ["run", "--format", "json", "--thinking", "--model", "openrouter/foo/bar", "--dangerously-skip-permissions"])
     // Instructions arrive as a delimited stdin preamble (opencode run has no system-prompt flag).
     assert.equal(launch.stdin, "<instructions>\nbe terse\n</instructions>\n\nhello from workflow")
     assert.equal(realpathSync(launch.cwd), realpathSync(dir))

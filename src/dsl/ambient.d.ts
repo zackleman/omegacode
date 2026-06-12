@@ -18,11 +18,9 @@ declare global {
   type OmegacodeJSONSchema = Record<string, unknown>
 
   /** Options an author passes to `agent()`. All optional; defaults come from meta/config/CLI. */
-  interface OmegacodeAgentOpts {
-    provider?: OmegacodeProviderId
+  interface OmegacodeAgentBaseOpts {
     label?: string
     phase?: string
-    model?: string
     effort?: OmegacodeEffort
     cwd?: string
     sandbox?: OmegacodeSandbox
@@ -35,6 +33,11 @@ declare global {
     /** Hard cap on agent turns (provider-enforced where supported). */
     maxTurns?: number
   }
+
+  /** provider and model travel together (both-or-neither): a lone provider would inherit a model
+   *  meant for a different provider from the run defaults. Set both, or omit both. */
+  type OmegacodeAgentOpts = OmegacodeAgentBaseOpts &
+    ({ provider: OmegacodeProviderId; model: string } | { provider?: never; model?: never })
 
   type OmegacodePipelineStage = (
     prev: unknown,

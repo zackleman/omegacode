@@ -18,8 +18,8 @@ export const meta = {
 }
 
 const PROVIDERS = [
-  { provider: "codex", name: "Codex" },
-  { provider: "claude-code", name: "Claude" },
+  { provider: "codex", model: "gpt-5.5", name: "Codex" },
+  { provider: "claude-code", model: "claude-fable-5", name: "Claude" },
 ]
 
 const question =
@@ -51,8 +51,8 @@ const asked = (
         `Answer this question concretely and commit to a position:\n\n${question}\n\n` +
           `If it concerns the repository you are in, ground your answer in the actual code. Give ` +
           `your answer plus the key points it rests on.`,
-        { provider: p.provider, effort: "low", label: `ask: ${p.name}`, phase: "Ask", schema: ANSWER_SCHEMA },
-      ).then((a) => ({ name: p.name, provider: p.provider, answer: a.answer, keyPoints: a.keyPoints })),
+        { provider: p.provider, model: p.model, effort: "low", label: `ask: ${p.name}`, phase: "Ask", schema: ANSWER_SCHEMA },
+      ).then((a) => ({ name: p.name, provider: p.provider, model: p.model, answer: a.answer, keyPoints: a.keyPoints })),
     ),
   )
 ).filter(Boolean)
@@ -122,7 +122,7 @@ const finals = (
           `claims) rather than restating your position. Then either defend your answer with ` +
           `evidence or change it. Changing your mind on the evidence is success, not failure. ` +
           `State your final answer.`,
-        { provider: a.provider, effort: "xhigh", label: `reconsider: ${a.name}`, phase: "Escalate", schema: { type: "object", required: ["answer", "changed"], properties: { answer: { type: "string" }, changed: { type: "boolean" } } } },
+        { provider: a.provider, model: a.model, effort: "xhigh", label: `reconsider: ${a.name}`, phase: "Escalate", schema: { type: "object", required: ["answer", "changed"], properties: { answer: { type: "string" }, changed: { type: "boolean" } } } },
       ).then((f) => ({ name: a.name, answer: f.answer, changed: f.changed }))
     }),
   )

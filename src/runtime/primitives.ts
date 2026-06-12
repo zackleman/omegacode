@@ -60,6 +60,21 @@ export function checkSpecEnum(field: keyof typeof SPEC_ENUMS, value: string | un
   }
 }
 
+/**
+ * Enforce the both-or-neither rule for (provider, model) at a single specification site. A lone
+ * `provider` would otherwise inherit the run-default `model` — a model meant for a DIFFERENT
+ * provider (a real run passed a run-wide gpt-5.5 to a per-call claude-code override that way);
+ * a lone `model` is the same leak from the other side. Model strings themselves stay open
+ * (each backend is authoritative) — this validates pairing, never model content.
+ */
+export function checkProviderModelPair(provider: string | undefined, model: string | undefined, site: string): void {
+  if ((provider === undefined) === (model === undefined)) return
+  const given = provider !== undefined ? `provider "${provider}" without model` : `model "${model}" without provider`
+  throw new WorkflowError(
+    `${site}: ${given} — provider and model must be specified together (set both, or omit both to inherit the run defaults)`,
+  )
+}
+
 export interface RuntimeOpts {
   runId: string
   defaults: RunDefaults
@@ -228,6 +243,10 @@ export class Runtime {
     checkSpecEnum("sandbox", spec.sandbox)
     checkSpecEnum("effort", spec.effort)
     checkSpecEnum("approval", spec.approval)
+    // Pairing is checked on the RAW opts (after the enum checks, so a typo'd provider still reports
+    // as invalid): a lone provider/model here would silently mix with the other half of the run
+    // defaults — the exact leak this rule exists to prevent. resolveDefaults covers the CLI/meta sites.
+    checkProviderModelPair(opts?.provider, opts?.model, "agent()")
     return spec
   }
 

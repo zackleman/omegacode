@@ -18,7 +18,7 @@ import {
   runDir,
   writeResult,
 } from "./journal.js"
-import { checkSpecEnum, Runtime } from "./primitives.js"
+import { checkProviderModelPair, checkSpecEnum, Runtime } from "./primitives.js"
 import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
@@ -201,6 +201,12 @@ function resolveDefaults(meta: { defaultProvider?: ProviderId; defaultModel?: st
   // into every spec and only fail at the factory (or not at all under --fake).
   const provider = o.provider ?? meta.defaultProvider ?? DEFAULTS.provider
   checkSpecEnum("provider", provider)
+  // Both-or-neither per SITE (CLI flags, meta defaults): a lone --model would pair with a provider
+  // chosen elsewhere — the gpt-5.5→claude-code leak. Each site supplies the pair atomically, so the
+  // field-wise resolution below can never mix a provider from one site with a model from another.
+  // (parseWorkflow validates the meta site too, so `omegacode validate` catches it without a run.)
+  checkProviderModelPair(o.provider, o.model, "--provider/--model")
+  checkProviderModelPair(meta.defaultProvider, meta.defaultModel, "meta.defaultProvider/defaultModel")
   return {
     provider,
     model: o.model ?? meta.defaultModel,

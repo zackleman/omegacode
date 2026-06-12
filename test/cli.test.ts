@@ -264,10 +264,20 @@ describe("CLI end-to-end (--fake)", () => {
 
   test("--provider opencode and --provider pi are accepted (fake round-trip)", async () => {
     for (const provider of ["opencode", "pi"]) {
-      const r = await runCli(["run", wf, "--provider", provider, "--fake", "--no-serve", "--json"], { OMEGACODE_HOME: home })
+      const r = await runCli(["run", wf, "--provider", provider, "--model", "openrouter/foo/bar", "--fake", "--no-serve", "--json"], { OMEGACODE_HOME: home })
       assert.equal(r.code, 0, `stderr=${r.stderr}`)
       assert.equal(JSON.parse(r.stdout).status, "completed")
     }
+  })
+
+  test("a lone --provider (or lone --model) is rejected — both-or-neither at the CLI site", async () => {
+    const p = await runCli(["run", wf, "--provider", "claude-code", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
+    assert.equal(p.code, 1)
+    assert.match(p.stderr, /provider "claude-code" without model — provider and model must be specified together/)
+    assert.doesNotMatch(p.stderr, /at \w+ \(/) // user-facing, no stack frames
+    const m = await runCli(["run", wf, "--model", "gpt-5.5", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
+    assert.equal(m.code, 1)
+    assert.match(m.stderr, /model "gpt-5.5" without provider — provider and model must be specified together/)
   })
 
   test("doctor resolves bins via env overrides and flags below-minimum versions as OUTDATED", { skip: process.platform === "win32" }, async () => {
@@ -289,7 +299,7 @@ describe("CLI end-to-end (--fake)", () => {
     const bad = join(home, "bad-default-provider.workflow.js")
     writeFileSync(
       bad,
-      `export const meta = { name: "bad", description: "typo'd provider", defaultProvider: "open-code" }\n` +
+      `export const meta = { name: "bad", description: "typo'd provider", defaultProvider: "open-code", defaultModel: "m" }\n` +
         `return await agent("say hi")\n`,
     )
     const r = await runCli(["run", bad, "--fake", "--no-serve"], { OMEGACODE_HOME: home })

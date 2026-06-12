@@ -93,6 +93,19 @@ test("meta must be an object literal with name/description", () => {
   assert.throws(() => parseWorkflow(`export const meta = 5\n`), WorkflowSyntaxError)
 })
 
+test("meta.defaultProvider/defaultModel are both-or-neither at parse time", () => {
+  // A lone defaultModel would pair with a provider chosen elsewhere (CLI or the built-in default)
+  // — a model meant for a different provider. `omegacode validate` must catch it without a run.
+  const lead = `export const meta = { name: "n", description: "d", `
+  assert.throws(() => parseWorkflow(`${lead}defaultProvider: "claude-code" }\nreturn 1\n`), /defaultProvider and meta\.defaultModel must be specified together/)
+  assert.throws(() => parseWorkflow(`${lead}defaultModel: "gpt-5.5" }\nreturn 1\n`), /defaultProvider and meta\.defaultModel must be specified together/)
+  // Both together (or neither) still parse.
+  const both = parseWorkflow(`${lead}defaultProvider: "claude-code", defaultModel: "claude-fable-5" }\nreturn 1\n`)
+  assert.equal(both.meta.defaultProvider, "claude-code")
+  assert.equal(both.meta.defaultModel, "claude-fable-5")
+  assert.equal(parseWorkflow(`export const meta = { name: "n", description: "d" }\nreturn 1\n`).meta.defaultProvider, undefined)
+})
+
 test("a non-array meta.phases fails at parse time, not as a TypeError mid-run", () => {
   // A non-iterable container would otherwise crash the Runtime constructor's declared-phase
   // loop after the run dir/journal already exist (burned run id, no terminal run event).

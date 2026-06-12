@@ -18,8 +18,8 @@ export const meta = {
 }
 
 const PROVIDERS = {
-  codex: { provider: "codex", name: "Codex" },
-  "claude-code": { provider: "claude-code", name: "Claude" },
+  codex: { provider: "codex", model: "gpt-5.5", name: "Codex" },
+  "claude-code": { provider: "claude-code", model: "claude-fable-5", name: "Claude" },
 }
 
 const question =
@@ -68,7 +68,7 @@ const proposal = await agent(
     `If this concerns the repository you are in, read the relevant code first and ground your ` +
     `position in it. Make your reasoning, assumptions, and tradeoffs explicit — this proposal will ` +
     `be scrutinized line by line, so vagueness counts against it.`,
-  { provider: proposer.provider, label: `propose: ${proposer.name}`, phase: "Propose" },
+  { provider: proposer.provider, model: proposer.model, label: `propose: ${proposer.name}`, phase: "Propose" },
 )
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ for (let round = 1; round <= rounds; round++) {
       `question concerns this repository, verify your objections against the actual code — a ` +
       `refuted attack weakens your side. Do not be agreeable, and do not repeat objections that ` +
       `earlier rebuttals already answered; move to stronger ground instead.`,
-    { provider: attacker.provider, label: `attack: round ${round}`, phase: "Debate" },
+    { provider: attacker.provider, model: attacker.model, label: `attack: round ${round}`, phase: "Debate" },
   )
 
   const rebuttal = await agent(
@@ -103,7 +103,7 @@ for (let round = 1; round <= rounds; round++) {
       `Respond to each objection in turn: defend it with reasoning and evidence (check the code ` +
       `where it applies), or concede it explicitly and revise. Conceding a weak point is better ` +
       `than defending it badly. End with your full current proposal, revised where you conceded.`,
-    { provider: proposer.provider, label: `rebut: round ${round}`, phase: "Debate" },
+    { provider: proposer.provider, model: proposer.model, label: `rebut: round ${round}`, phase: "Debate" },
   )
 
   transcript.push({ round, critique, rebuttal })

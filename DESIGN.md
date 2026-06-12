@@ -246,7 +246,11 @@ worker maps to its nearest supported value), cwd?, sandbox?:
 "read-only"|"workspace-write"|"danger-full-access", approval?: "never"|"on-request", instructions?,
 schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: number }`.
 - `provider` selects the backend for this call; default = `--provider` → `meta.defaultProvider` →
-  built-in (`codex`).
+  built-in (`codex`). `provider` and `model` are **both-or-neither** at every specification site
+  (per-call opts, meta defaults, CLI flags): each site supplies the pair atomically or not at all,
+  so a model meant for one provider can never pair with a provider chosen at a different site
+  (a real run leaked a run-wide `gpt-5.5` into a per-call `claude-code` override this way).
+  Model *strings* stay open — each backend is authoritative; only the pairing is validated.
 - `schema` → the provider's native structured output (Codex `outputSchema` / Claude `outputFormat`),
   re-validated client-side (§6.3).
 - `sandbox`/`approval` map per provider (§6.4); `effort` maps natively on Codex, best-effort on Claude
@@ -256,7 +260,8 @@ schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: numbe
   wording changes; omit it to use the default chained key. (`label`/`phase`/`key` do **not** affect the
   chained key — `provider` and the other semantics-bearing opts do.)
 
-The `meta` block may set `defaultProvider` (and default `model`/`sandbox`) for the whole workflow. The
+The `meta` block may set `defaultProvider` + `defaultModel` (together — both-or-neither, enforced
+at parse time so `validate` catches it) and `defaultSandbox` for the whole workflow. The
 file is **not** an importable module — there is no `defineWorkflow`/default-export wiring, because the
 sandbox (§5) has no module loader; the `export const meta` statement is the one piece read statically
 (its pure-literal form enforced), and the body runs against injected globals. Schemas are plain JSON
@@ -624,8 +629,9 @@ omegacode guide                         # print the authoring guide (the body of
 omegacode install-skill [--claude] [--agents]   # install skill/SKILL.md into agent skill dirs
 ```
 
-`--provider` sets the **default** worker for the run; individual `agent()` calls override it via
-`opts.provider`. By default `run` auto-starts the viewer and prints the run's URL; `--open` also launches
+`--provider` sets the **default** worker for the run and must be paired with `--model`
+(both-or-neither, like every other provider/model site); individual `agent()` calls override the
+pair via `opts.provider` + `opts.model`. By default `run` auto-starts the viewer and prints the run's URL; `--open` also launches
 the browser, `--no-serve` opts out, and `--json` keeps stdout pure JSON (the URL moves to a `url` field).
 On completion *or* failure, `run` prints the `runId` and the exact `--resume` command. `--fake` swaps in
 the in-process fake worker (no real provider calls) for offline smoke tests. `guide` and `install-skill`
